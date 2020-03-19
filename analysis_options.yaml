@@ -1,0 +1,28 @@
+# Defines a default set of lint rules enforced for
+# projects at Google. For details and rationale,
+# see https://github.com/dart-lang/pedantic#enabled-lints.
+include: package:pedantic/analysis_options.yaml
+
+# This package provides linter rules corresponding to the guidelines in Effective Dart
+# include: package:effective_dart/analysis_options.yaml
+
+analyzer:
+  exclude: [build/**]
+  strong-mode:
+    implicit-casts: false
+
+linter:
+  rules:
+    - camel_case_types
+    - non_constant_identifier_names
+    - prefer_expression_function_bodies
+    - avoid_print
+    - type_annotate_public_apis
+    - slash_for_doc_comments
+    - unnecessary_brace_in_string_interps
+    - unnecessary_getters_setters
+    - unnecessary_statements
+    - unrelated_type_equality_checks
+    - valid_regexps
+    - public_member_api_docs
+    - sort_constructors_first
