@@ -1,9 +1,31 @@
 import 'dart:collection';
 import 'dart:math';
 
-import 'package:suggester/src/term_mappings.dart';
-import 'package:ternarytreap/ternarytreap.dart';
 import 'package:meta/meta.dart';
+import 'package:suggester/src/term_mappings.dart';
+
+import 'package:ternarytreap/ternarytreap.dart';
+
+/// Required information for marking a single term within
+/// a suggestion string.
+@immutable
+class TermMark {
+  /// Construct a [TermMark]
+  TermMark(
+    this.skip,
+    this.length,
+  );
+
+  /// Number of characters to skip from last [TermMark] or
+  /// start of string if this is first [TermMark].
+  final int skip;
+
+  /// Length of mark
+  final int length;
+
+  @override
+  String toString() => 'Offset:$skip, Length:$length';
+}
 
 /// A suggestion
 @immutable
@@ -14,7 +36,7 @@ class Suggestion implements Comparable<Suggestion> {
   /// The original suggestion string supplied by client.
   final String value;
 
-  /// Term Proximality of this [Suggestion] instance in [value]
+  /// Term proximality
   final double _tp;
 
   @override
@@ -26,9 +48,32 @@ class Suggestion implements Comparable<Suggestion> {
 
   @override
   int compareTo(Suggestion other) => value.compareTo(other.value);
+
+  @override
+  String toString() => value;
+
+  /// Mark [Value] with <strong> tags according to [termMarks].
+  String markTags(
+      Iterable<TermMark> termMarks, String startTag, String endTag) {
+    var idxValue = 0;
+    var buffer = StringBuffer();
+    for (final termMark in termMarks) {
+      buffer.write(value.substring(idxValue, idxValue + termMark.skip));
+      idxValue += termMark.skip;
+      buffer.write(startTag);
+      buffer.write(value.substring(idxValue, idxValue + termMark.length));
+      idxValue += termMark.length;
+      buffer.write(endTag);
+    }
+    buffer.write(value.substring(idxValue));
+    return buffer.toString();
+  }
 }
 
 /// Suggests text completions.
+///
+/// Below is totally wrong: now uses binary TF features to save memory.
+/// Tradeoff works because only short strings are stored as suggestions.
 ///
 /// Uses a modified version of "term frequency - inverse document frequency" (tf-idf)
 /// weighting to allow ordering not just by relevance but by term order similarity to
@@ -59,12 +104,11 @@ class Suggestion implements Comparable<Suggestion> {
 ///
 class Suggester {
   /// Construct a new [Suggester]
-  Suggester(this.termMapping,
-      {this.caseInsensitive = true, this.unicode = true})
+  Suggester(this.termMapping, {this.caseSensitive = false, this.unicode = true})
       : _ternaryTreap = TernaryTreapSet<Suggestion>();
 
   /// Specify case sensitivity of [termMapping].
-  final bool caseInsensitive;
+  final bool caseSensitive;
 
   /// Specify if [termMapping] uses unicode or ascii RegExp.
   final bool unicode;
@@ -79,37 +123,42 @@ class Suggester {
   /// Numnber of suggestions currently available
   int get length => _length;
 
-  /// Add [term] for to the list of possible suggestions
+  /// Use supplied [TermMapping] to map [str] to a pairwise
+  /// distinct sequence of terms.
+  Iterable<String> mapTerms(String suggestion) {
+    return termMapping.map(suggestion, caseSensitive, unicode);
+  }
+
+  /// Add [suggestion] for to the list of possible suggestions
   ///
-  /// If [term] is null or empty then throws [ArgumentError].
+  /// If [suggestion] is null or empty then throws [ArgumentError].
   ///
-  /// If [term] cannot be mapped to at least 1 key via specified [TermMapping]
+  /// If [suggestion] cannot be mapped to at least 1 key via specified [TermMapping]
   /// then it is not added and return value is false.
   ///
-  /// If [term] is successfully added then return value is true.
-  bool add(String term) {
-    if (term == null) {
+  /// If [suggestion] is successfully added then return value is true.
+  bool add(String suggestion) {
+    if (suggestion == null) {
       throw ArgumentError.notNull('term');
     }
-    if (term.isEmpty) {
-      throw ArgumentError.value(term);
+    if (suggestion.isEmpty) {
+      throw ArgumentError.value(suggestion);
     }
-    // Transform term into list of keys and map them to term
-    final keys = termMapping.map(term, caseInsensitive, unicode);
+
+    // Transform term into list of distinct keys and map them to term
+    final terms = mapTerms(suggestion);
 
     // Unable to add this term
-    if (keys.isEmpty) {
+    if (terms.isEmpty) {
       return false;
     }
 
     var termIdx = 0;
-    for (var key in keys) {
-      final suggestionKey = Suggestion._(term, _tpFromTermIdx(termIdx));
-
+    for (var term in terms) {
+      final suggestionObj = Suggestion._(suggestion, _tpFromTermIdx(termIdx));
       // Add new or retrieve current suggestion.
-      _ternaryTreap.lookup(key, suggestionKey) ??
-          _ternaryTreap.add(key, suggestionKey);
-
+      _ternaryTreap.lookup(term, suggestionObj) ??
+          _ternaryTreap.add(term, suggestionObj);
       termIdx++;
     }
 
@@ -117,15 +166,14 @@ class Suggester {
     return true;
   }
 
-  /// Add [name] for to the list of possible suggestions
+  /// Equivilent to [add] for all [suggestions].
   ///
-  /// Equivilent to [add] for all [terms].
-  ///
-  /// Throws
-  void addAll(Iterable<String> terms) {
-    for (final term in terms) {
-      if (!add(term)) {
-        throw ArgumentError.value(term, 'terms', 'Failed to add term');
+  /// Throws [ArgumentError] if [add] fails.
+  void addAll(Iterable<String> suggestions) {
+    for (final suggestion in suggestions) {
+      if (!add(suggestion)) {
+        throw ArgumentError.value(
+            suggestion, 'suggestions', 'Failed to add suggestion');
       }
     }
   }
@@ -133,42 +181,47 @@ class Suggester {
   /// Return approximate size of [Suggester] instance in memory
   int sizeOf() {
     const SIZE_OF_INT = 4;
-    // Get all unique suggestions strings and find total size
+    // Strings are shared between multiple instances of Suggestion.
+    // Get all unique suggestions strings and find total size of strings
     final uniqueSuggestions = _ternaryTreap.values.toSet();
     var suggestionStringBytes = 0;
     for (final suggestion in uniqueSuggestions) {
-      suggestionStringBytes += suggestion.value.codeUnits.length*SIZE_OF_INT;
+      suggestionStringBytes += suggestion.value.codeUnits.length * SIZE_OF_INT;
     }
 
-    // Add to size of underlying TernaryTreap calculated with size
-    // of suggestion._tp field.
+    // Add to size of underlying TernaryTreap accounting for _tp field
+    // that is unique to each Suggestion instance.
     return suggestionStringBytes + _ternaryTreap.sizeOf(SIZE_OF_INT);
   }
 
   /// Return list of suggestions based upon [str].
   /// Ordered descending by weight and then ascending by term.
-  Iterable<Suggestion> suggest(String str) {
-    final keys = termMapping.map(str, caseInsensitive, unicode);
+  Iterable<Suggestion> suggest(String str) => suggestFromTerms(mapTerms(str));
 
-    if (keys.isEmpty) {
+  /// Return list of suggestions based upon [terms].
+  /// Ordered descending by weight and then lexicographically
+  /// ascending by suggestion.
+  Iterable<Suggestion> suggestFromTerms(Iterable<String> terms) {
+    if (terms.isEmpty) {
       return Iterable<Suggestion>.empty();
     }
 
     final suggestionWeights = HashMap<Suggestion, double>();
 
-    for (final key in keys) {
-      final tpKey = 1;
-      final keySuggestions = _ternaryTreap.entriesByKeyPrefix(key);
+    var termIdx = 0;
+    for (final term in terms) {
+      final tpTerm = _tpFromTermIdx(termIdx);
+      final termSuggestions = _ternaryTreap.entriesByKeyPrefix(term);
 
-      for (final keySuggestion in keySuggestions) {
-        final values = keySuggestion.value;
+      for (final termSuggestion in termSuggestions) {
+        final values = termSuggestion.value;
         if (values.isEmpty) {
           throw Error();
         }
         final idf = log(length / values.length);
         for (final suggestion in values) {
           final currentWeight = suggestionWeights[suggestion];
-          final weightUpdate = tpKey * suggestion._tp * idf;
+          final weightUpdate = tpTerm * suggestion._tp * idf;
           if (currentWeight == null) {
             suggestionWeights[suggestion] = weightUpdate;
           } else {
@@ -176,6 +229,7 @@ class Suggester {
           }
         }
       }
+      termIdx++;
     }
 
     final entries = suggestionWeights.entries.toList()
@@ -193,6 +247,67 @@ class Suggester {
 
     return entries.map((final entry) => entry.key);
   }
+
+  /// Return term marking for [terms] over [suggestion].
+  Iterable<TermMark> markTerms(Iterable<String> terms, Suggestion suggestion) {
+    final suggestionValue =
+        caseSensitive ? suggestion.value : suggestion.value.toLowerCase();
+    final result = <TermMark>[];
+    final mask = List<bool>.filled(suggestionValue.length, false);
+    final termsList = terms
+        .map((String term) => caseSensitive ? term : term.toLowerCase())
+        .toList();
+
+    // Handle case where term is subsequence of another by processing larger strings first
+    termsList.sort((b, a) => a.length.compareTo(b.length));
+
+    for (var term in termsList) {
+      // If this term is a subsequence of another term then keep looking
+      var isSubSequence = true;
+      var suggestionIdx = 0;
+      // Search for non subsequence instance of term
+      while (isSubSequence) {
+        suggestionIdx = suggestionValue.indexOf(term, suggestionIdx);
+        if (suggestionIdx == -1) {
+          break;
+        }
+        // Mask term instance and determine if it is a subsquence
+        for (var termIdx = suggestionIdx;
+            termIdx < suggestionIdx + term.length;
+            termIdx++) {
+          if (!mask[termIdx]) {
+            mask[termIdx] = true;
+            isSubSequence = false;
+          }
+        }
+        suggestionIdx += term.length;
+      }
+    }
+
+    var maskIdx = 0;
+    var lastMarkEnd = 0;
+
+    while (maskIdx < mask.length) {
+      if (mask[maskIdx]) {
+        final skip = maskIdx - lastMarkEnd;
+        maskIdx++;
+        var length = 1;
+        while (maskIdx < mask.length && mask[maskIdx]) {
+          maskIdx++;
+          length++;
+        }
+        result.add(TermMark(skip, length));
+        lastMarkEnd += skip + length;
+      } else {
+        maskIdx++;
+      }
+    }
+
+    return result;
+  }
 }
 
-double _tpFromTermIdx(int termIdx) => (1 / (termIdx + 1));
+/// Weight terms inversely according to their proximality.
+/// Adding 1 allows distal terms to overcome proximal terms
+/// via summation.
+double _tpFromTermIdx(int termIdx) => 1 + (1 / (termIdx + 1));
