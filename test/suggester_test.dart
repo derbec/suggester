@@ -41,7 +41,8 @@ void main() {
           ]));
 
       expect(
-          Ngrams(2, pad: true).map('This is a dog named, Banjo.', false, true),
+          Ngrams(2, padStart: true, padEnd: true)
+              .map('This is a dog named, Banjo.', false, true),
           equals([
             '\u00A0t',
             'th',
@@ -72,7 +73,8 @@ void main() {
           ]));
 
       expect(
-          Ngrams(3, pad: true).map('This is a dog named, Banjo.', false, true),
+          Ngrams(3, padStart: true, padEnd: true)
+              .map('This is a dog named, Banjo.', false, true),
           equals([
             '\u00A0\u00A0t',
             '\u00A0th',
@@ -104,11 +106,76 @@ void main() {
             '.\u00A0\u00A0'
           ]));
 
+      expect(
+          Ngrams(3, padStart: false, padEnd: true)
+              .map('This is a dog named, Banjo.', false, true),
+          equals([
+            'thi',
+            'his',
+            'is ',
+            's i',
+            ' is',
+            's a',
+            ' a ',
+            'a d',
+            ' do',
+            'dog',
+            'og ',
+            'g n',
+            ' na',
+            'nam',
+            'ame',
+            'med',
+            'ed,',
+            'd, ',
+            ', b',
+            ' ba',
+            'ban',
+            'anj',
+            'njo',
+            'jo.',
+            'o.\u00A0',
+            '.\u00A0\u00A0'
+          ]));
+
+      expect(
+          Ngrams(3, padStart: true, padEnd: false)
+              .map('This is a dog named, Banjo.', false, true),
+          equals([
+            '\u00A0\u00A0t',
+            '\u00A0th',
+            'thi',
+            'his',
+            'is ',
+            's i',
+            ' is',
+            's a',
+            ' a ',
+            'a d',
+            ' do',
+            'dog',
+            'og ',
+            'g n',
+            ' na',
+            'nam',
+            'ame',
+            'med',
+            'ed,',
+            'd, ',
+            ', b',
+            ' ba',
+            'ban',
+            'anj',
+            'njo',
+            'jo.',
+          ]));
+
       expect(Ngrams(3).map('dere', false, true), equals(['der', 'ere']));
       expect(Ngrams(2).map('dere', false, true), equals(['de', 'er', 're']));
 
       expect(
-          Ngrams(2).map('This is a dog named, Banjo.', false, true),
+          Ngrams(2, padStart: false, padEnd: false)
+              .map('This is a dog named, Banjo.', false, true),
           equals([
             'th',
             'hi',
@@ -172,22 +239,35 @@ void main() {
     });
 
     test('markKeys', () {
-      final suggester = Suggester(Alpha());
+      var suggester = Suggester(Alpha());
       suggester.add('Derek_Barton@jarvis.com');
 
-      final terms = suggester.mapTerms('o rt derek ere vis');
+      var terms = suggester.mapTerms('o rt derek ere vis');
 
-      final suggestion = suggester.suggestFromTerms(terms).first;
+      var suggestion = suggester.suggestFromTerms(terms).first;
 
-      final termMarks = suggester.markTerms(terms, suggestion);
+      var markTerms =
+          suggester.markTerms(terms, suggestion, (final term)=>'<strong>'+term+'</strong>');
 
-      print(terms);
+      expect(
+          markTerms,
+          equals(
+              '<strong>Derek</strong>_Ba<strong>rto</strong>n@jar<strong>vis</strong>.com'));
 
-      print(suggestion);
+      suggester = Suggester(Ngrams(3, padStart: true, padEnd: true));
+      suggester.add('Derek_Barton@jarvis.com');
 
-      print(termMarks);
+      terms = suggester.mapTerms('o rt derek ere vis');
 
-      print(suggestion.markTags(termMarks, '<strong>', '</strong>'));
+      suggestion = suggester.suggestFromTerms(terms).first;
+
+      markTerms =
+          suggester.markTerms(terms, suggestion, (final term)=>'<strong>'+term+'</strong>');
+
+      expect(
+          markTerms,
+          equals(
+              '<strong>Derek</strong>_Ba<strong>rto</strong>n@jar<strong>vis</strong>.com'));
     });
   });
 }

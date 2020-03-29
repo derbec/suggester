@@ -2,29 +2,30 @@ import 'dart:collection';
 import 'dart:math';
 
 import 'package:meta/meta.dart';
-import 'package:suggester/src/term_mappings.dart';
 
 import 'package:ternarytreap/ternarytreap.dart';
 
-/// Required information for marking a single term within
-/// a suggestion string.
-@immutable
-class TermMark {
-  /// Construct a [TermMark]
-  TermMark(
-    this.skip,
-    this.length,
-  );
+/// Maps from [suggestion] to a sequence of terms.
+///
+/// <i>f</i> :  <i>S</i> &twoheadrightarrow; <i>S</i><sup>&#8469;</sup>
+///
+/// such that
+///
+/// * <i>S</i> is the set of all non empty Strings
+/// * &#8469; is the set of Natural numbers
+/// * <i>S</i><sup>&#8469;</sup> is the set of all functions &#8469; &mapsto; <i>S</i>
+///
+/// The sequence of terms is pairwise distinct, i.e. a term can occur only once
+/// in the returned sequence.
+///
+/// The term order relects the order of characters in [suggestion].
+abstract class TermMapping {
+  /// Construct [TermMapping] with specified [map] function
+  TermMapping(this.map);
 
-  /// Number of characters to skip from last [TermMark] or
-  /// start of string if this is first [TermMark].
-  final int skip;
-
-  /// Length of mark
-  final int length;
-
-  @override
-  String toString() => 'Offset:$skip, Length:$length';
+  /// Performs mapping
+  final Iterable<String> Function(
+      String suggestion, bool caseSensitive, bool unicode) map;
 }
 
 /// A suggestion
@@ -51,23 +52,6 @@ class Suggestion implements Comparable<Suggestion> {
 
   @override
   String toString() => value;
-
-  /// Mark [Value] with <strong> tags according to [termMarks].
-  String markTags(
-      Iterable<TermMark> termMarks, String startTag, String endTag) {
-    var idxValue = 0;
-    var buffer = StringBuffer();
-    for (final termMark in termMarks) {
-      buffer.write(value.substring(idxValue, idxValue + termMark.skip));
-      idxValue += termMark.skip;
-      buffer.write(startTag);
-      buffer.write(value.substring(idxValue, idxValue + termMark.length));
-      idxValue += termMark.length;
-      buffer.write(endTag);
-    }
-    buffer.write(value.substring(idxValue));
-    return buffer.toString();
-  }
 }
 
 /// Suggests text completions.
@@ -113,7 +97,7 @@ class Suggester {
   /// Specify if [termMapping] uses unicode or ascii RegExp.
   final bool unicode;
 
-  /// The [TermMapping] used to convert suggestions to a list of keys.
+  /// The [TermMapping] used to convert suggestions to a list of terms.
   final TermMapping termMapping;
 
   final TernaryTreapSet<Suggestion> _ternaryTreap;
@@ -125,7 +109,18 @@ class Suggester {
 
   /// Use supplied [TermMapping] to map [str] to a pairwise
   /// distinct sequence of terms.
+  ///
+  /// If [passThroughIfNoTerms] is true then when no terms are generated original value is
+  /// returned modifed only to comply with case sensitivity status. This allows term
+  /// mappings that require a minimum number of characters to still provide a search term.
   Iterable<String> mapTerms(String suggestion) {
+    if (suggestion == null) {
+      throw ArgumentError.notNull('suggestion');
+    }
+    if (suggestion.isEmpty) {
+      return Iterable<String>.empty();
+    }
+
     return termMapping.map(suggestion, caseSensitive, unicode);
   }
 
@@ -178,6 +173,80 @@ class Suggester {
     }
   }
 
+  /// Mark tags
+  String markTerms(Iterable<String> terms, Suggestion suggestion,
+      String Function(String term) mark) {
+    final suggestionValue = suggestion.value;
+    final suggestionCase =
+        caseSensitive ? suggestionValue : suggestionValue.toLowerCase();
+
+    final termsList = terms.map((final term) => term.trim()).toSet().toList();
+
+    // Grow by processing smaller terms first
+    // *THIS ORDERING IS NECESSARY FOR CORRECT HIGHLIGHTING OF NGRAM TERMS*
+    termsList.sort((a, b) => a.length.compareTo(b.length));
+
+    // Write all term positions to a mask
+    final mask = List<bool>.filled(suggestionCase.length, false);
+
+    // If a term is found to be completely occluded by previously processed
+    // terms then look for another match.
+    for (var term in termsList) {
+      // If this term is occluded then keep looking
+      var isOccluded = true;
+      var suggestionIdx = 0;
+      // Search for non occluded instance of term
+      while (isOccluded) {
+        suggestionIdx = suggestionCase.indexOf(term, suggestionIdx);
+        if (suggestionIdx == -1) {
+          break;
+        }
+        // Mask term instance and determine if it is occluded
+        for (var termIdx = suggestionIdx;
+            termIdx < suggestionIdx + term.length;
+            termIdx++) {
+          if (!mask[termIdx]) {
+            mask[termIdx] = true;
+            isOccluded = false;
+          }
+        }
+        suggestionIdx += term.length;
+      }
+    }
+
+    // Move through mask and perform marking
+    var maskIdx = 0;
+    var lastMarkEnd = 0;
+    var suggestionIdx = 0;
+    var buffer = StringBuffer();
+
+    while (maskIdx < mask.length) {
+      if (mask[maskIdx]) {
+        final skip = maskIdx - lastMarkEnd;
+        maskIdx++;
+        var length = 1;
+        while (maskIdx < mask.length && mask[maskIdx]) {
+          maskIdx++;
+          length++;
+        }
+
+        buffer.write(
+            suggestionValue.substring(suggestionIdx, suggestionIdx + skip));
+        suggestionIdx += skip;
+
+        buffer.write(mark(
+            suggestionValue.substring(suggestionIdx, suggestionIdx + length)));
+        suggestionIdx += length;
+
+        lastMarkEnd += skip + length;
+      } else {
+        maskIdx++;
+      }
+    }
+    buffer.write(suggestionValue.substring(suggestionIdx));
+    return buffer.toString();
+  }
+
   /// Return approximate size of [Suggester] instance in memory
   int sizeOf() {
     const SIZE_OF_INT = 4;
@@ -196,12 +265,18 @@ class Suggester {
 
   /// Return list of suggestions based upon [str].
   /// Ordered descending by weight and then ascending by term.
-  Iterable<Suggestion> suggest(String str) => suggestFromTerms(mapTerms(str));
+  Iterable<Suggestion> suggest(String str,
+          {bool passThroughIfNoTerms = false}) =>
+      suggestFromTerms(mapTerms(str));
 
   /// Return list of suggestions based upon [terms].
   /// Ordered descending by weight and then lexicographically
   /// ascending by suggestion.
   Iterable<Suggestion> suggestFromTerms(Iterable<String> terms) {
+    if (terms == null) {
+      throw ArgumentError.notNull('terms');
+    }
+
     if (terms.isEmpty) {
       return Iterable<Suggestion>.empty();
     }
@@ -246,64 +321,6 @@ class Suggester {
       });
 
     return entries.map((final entry) => entry.key);
-  }
-
-  /// Return term marking for [terms] over [suggestion].
-  Iterable<TermMark> markTerms(Iterable<String> terms, Suggestion suggestion) {
-    final suggestionValue =
-        caseSensitive ? suggestion.value : suggestion.value.toLowerCase();
-    final result = <TermMark>[];
-    final mask = List<bool>.filled(suggestionValue.length, false);
-    final termsList = terms
-        .map((String term) => caseSensitive ? term : term.toLowerCase())
-        .toList();
-
-    // Handle case where term is subsequence of another by processing larger strings first
-    termsList.sort((b, a) => a.length.compareTo(b.length));
-
-    for (var term in termsList) {
-      // If this term is a subsequence of another term then keep looking
-      var isSubSequence = true;
-      var suggestionIdx = 0;
-      // Search for non subsequence instance of term
-      while (isSubSequence) {
-        suggestionIdx = suggestionValue.indexOf(term, suggestionIdx);
-        if (suggestionIdx == -1) {
-          break;
-        }
-        // Mask term instance and determine if it is a subsquence
-        for (var termIdx = suggestionIdx;
-            termIdx < suggestionIdx + term.length;
-            termIdx++) {
-          if (!mask[termIdx]) {
-            mask[termIdx] = true;
-            isSubSequence = false;
-          }
-        }
-        suggestionIdx += term.length;
-      }
-    }
-
-    var maskIdx = 0;
-    var lastMarkEnd = 0;
-
-    while (maskIdx < mask.length) {
-      if (mask[maskIdx]) {
-        final skip = maskIdx - lastMarkEnd;
-        maskIdx++;
-        var length = 1;
-        while (maskIdx < mask.length && mask[maskIdx]) {
-          maskIdx++;
-          length++;
-        }
-        result.add(TermMark(skip, length));
-        lastMarkEnd += skip + length;
-      } else {
-        maskIdx++;
-      }
-    }
-
-    return result;
   }
 }
 

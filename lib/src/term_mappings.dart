@@ -1,4 +1,5 @@
 import 'dart:collection';
+import 'package:suggester/suggester.dart';
 
 final RegExp _matchAlphaUnicode = RegExp(r'\p{L}+', unicode: true);
 final RegExp _matchAlphaAscii = RegExp(r'[a-zA-Z]+');
@@ -16,36 +17,14 @@ String _collapseWhitespace(String str, bool unicode) => str
     .trim()
     .replaceAll(unicode ? _matchSeparatorUnicode : _matchSeparatorAscii, ' ');
 
-/// Maps from [suggestion] to a sequence of terms.
-///
-/// <i>f</i> :  <i>S</i> &twoheadrightarrow; <i>S</i><sup>&#8469;</sup>
-///
-/// such that
-///
-/// * <i>S</i> is the set of all non empty Strings
-/// * &#8469; is the set of Natural numbers
-/// * <i>S</i><sup>&#8469;</sup> is the set of all functions &#8469; &mapsto; <i>S</i>
-///
-/// The sequence of terms is pairwise distinct, i.e. a term can occur only once
-/// in the returned sequence.
-///
-/// The term order relects the order of characters in [suggestion].
-class TermMapping {
-  /// Construct [TermMapping] with specified [map] function
-  TermMapping(this.map);
-
-  /// Performs mapping
-  final Iterable<String> Function(
-      String suggestion, bool caseSensitive, bool unicode) map;
-}
-
 /// Match runs of alphanumeric characters seperated by non alphanuermic characters
 class Tokens extends TermMapping {
   /// Construct tokens
   Tokens()
       : super((String str, bool caseSensitive, bool unicode) =>
             LinkedHashSet<String>.from((caseSensitive ? str : str.toLowerCase())
-                .split(_matchSeparatorUnicode)));
+                .split(
+                    unicode ? _matchSeparatorUnicode : _matchSeparatorAscii)));
 }
 
 /// Each term represents a run of Letters
@@ -84,7 +63,8 @@ class AlphaOrNumeric extends TermMapping {
 /// Create ngrams of specified size and padding character
 class Ngrams extends TermMapping {
   /// Construct [Ngrams] with gram size.
-  Ngrams(this.n, {this.pad = false, this.padChar = '\u00A0'})
+  Ngrams(this.n,
+      {this.padStart = false, this.padEnd = false, this.padChar = '\u00A0'})
       : super((String str, bool caseSensitive, bool unicode) {
           final orderedNgrams =
               LinkedHashSet<String>(); // ignore: prefer_collection_literals
@@ -99,37 +79,45 @@ class Ngrams extends TermMapping {
 
           final ngramBuffer = StringBuffer();
 
-          if (pad) {
-            for (var i = -(n - 1); i < strLen; i++) {
-              for (var j = 0; j < n; j++) {
-                final strIdx = i + j;
-                if (strIdx < 0 || strIdx >= strLen) {
-                  ngramBuffer.write(padChar);
-                } else {
-                  ngramBuffer.write(str[strIdx]);
-                }
+          final start = padStart ? -(n - 1) : 0;
+          final end = padEnd ? strLen : strLen - (n - 1);
+
+          for (var i = start; i < end; i++) {
+            for (var j = 0; j < n; j++) {
+              final strIdx = i + j;
+              if (strIdx < 0 || strIdx >= strLen) {
+                ngramBuffer.write(padChar);
+              } else {
+                ngramBuffer.write(str[strIdx]);
               }
-              orderedNgrams.add(ngramBuffer.toString());
-              ngramBuffer.clear();
             }
-          } else {
-            for (var i = 0; i < strLen - (n-1); i++) {
-              for (var j = 0; j < n; j++) {
-                ngramBuffer.write(str[i + j]);
-              }
-              orderedNgrams.add(ngramBuffer.toString());
-              ngramBuffer.clear();
-            }
+            orderedNgrams.add(ngramBuffer.toString());
+            ngramBuffer.clear();
           }
 
           return orderedNgrams;
         });
 
+  /// Remove padding from [term] where:
+  /// * [termIdx] is index of term in sequence.
+  /// * [termCount] is length of terms sequence.
+  String _unpad(String term, int termIdx, int termCount) {
+    final start = padStart && (termIdx < n - 1) ? (n - termIdx - 1) : 0;
+    final end = padEnd && (termIdx > (termCount - n))
+        ? (term.length - (n - (termCount - termIdx)))
+        : term.length;
+
+    return term.substring(start, end);
+  }
+
   /// Size of each ngram
   final int n;
 
-  /// If true then padding is applied at start and end of string.
-  final bool pad;
+  /// If true then padding is applied at start of string.
+  final bool padStart;
+
+  /// If true then padding is applied at end of string.
+  final bool padEnd;
 
   /// Padding character
   final String padChar;
