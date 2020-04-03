@@ -1,4 +1,3 @@
-import 'package:suggester/src/term_mappings.dart';
 import 'package:suggester/suggester.dart';
 import 'package:test/test.dart';
 import 'emails.dart';

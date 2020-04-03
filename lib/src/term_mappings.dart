@@ -20,52 +20,65 @@ String _collapseWhitespace(String str, bool unicode) => str
 /// Match runs of alphanumeric characters seperated by non alphanuermic characters
 class Tokens extends TermMapping {
   /// Construct tokens
-  Tokens()
-      : super((String str, bool caseSensitive, bool unicode) =>
-            LinkedHashSet<String>.from((caseSensitive ? str : str.toLowerCase())
-                .split(
-                    unicode ? _matchSeparatorUnicode : _matchSeparatorAscii)));
+  Tokens({double decay})
+      : super(
+            (String str, bool caseSensitive, bool unicode) =>
+                LinkedHashSet<String>.from((caseSensitive
+                        ? str
+                        : str.toLowerCase())
+                    .split(
+                        unicode ? _matchSeparatorUnicode : _matchSeparatorAscii)
+                    .where((final term) => term.isNotEmpty)),
+            decay ?? 0.1);
 }
 
 /// Each term represents a run of Letters
 class Alpha extends TermMapping {
   /// Construct tokens
-  Alpha()
-      : super((String str, bool caseSensitive, bool unicode) =>
-            LinkedHashSet<String>.from(
-                (unicode ? _matchAlphaUnicode : _matchAlphaAscii)
-                    .allMatches(caseSensitive ? str : str.toLowerCase())
-                    .map((m) => m[0])));
+  Alpha({double decay})
+      : super(
+            (String str, bool caseSensitive, bool unicode) =>
+                LinkedHashSet<String>.from(
+                    (unicode ? _matchAlphaUnicode : _matchAlphaAscii)
+                        .allMatches(caseSensitive ? str : str.toLowerCase())
+                        .map((m) => m[0])),
+            decay ?? 0.1);
 }
 
 /// Each term represents a run of Letters and Numbers
 class AlphaAndNumeric extends TermMapping {
   /// Construct tokens
-  AlphaAndNumeric()
-      : super((String str, bool caseSensitive, bool unicode) =>
-            LinkedHashSet<String>.from(_matchAlphaAndNumeric
-                .allMatches(caseSensitive ? str : str.toLowerCase())
-                .map((m) => m[0])));
+  AlphaAndNumeric({double decay})
+      : super(
+            (String str, bool caseSensitive, bool unicode) =>
+                LinkedHashSet<String>.from(_matchAlphaAndNumeric
+                    .allMatches(caseSensitive ? str : str.toLowerCase())
+                    .map((m) => m[0])),
+            decay ?? 0.1);
 }
 
 /// Each term represents a run of Letters or Numbers
 class AlphaOrNumeric extends TermMapping {
   /// Construct tokens
-  AlphaOrNumeric()
-      : super((String str, bool caseSensitive, bool unicode) =>
-            LinkedHashSet<String>.from((unicode
-                    ? _matchAlphaOrNumericUnicode
-                    : _matchAlphaOrNumericAscii)
-                .allMatches(caseSensitive ? str : str.toLowerCase())
-                .map((m) => m[0])));
+  AlphaOrNumeric({double decay})
+      : super(
+            (String str, bool caseSensitive, bool unicode) =>
+                LinkedHashSet<String>.from((unicode
+                        ? _matchAlphaOrNumericUnicode
+                        : _matchAlphaOrNumericAscii)
+                    .allMatches(caseSensitive ? str : str.toLowerCase())
+                    .map((m) => m[0])),
+            decay ?? 0.1);
 }
 
 /// Create ngrams of specified size and padding character
 class Ngrams extends TermMapping {
   /// Construct [Ngrams] with gram size.
-  Ngrams(this.n,
-      {this.padStart = false, this.padEnd = false, this.padChar = '\u00A0'})
+  Ngrams(int n, {double decay, bool padStart, bool padEnd, String padChar})
       : super((String str, bool caseSensitive, bool unicode) {
+          padStart = padStart ?? false;
+          padEnd = padEnd ?? false;
+          padChar = padChar ?? '\u00A0';
           final orderedNgrams =
               LinkedHashSet<String>(); // ignore: prefer_collection_literals
 
@@ -96,8 +109,9 @@ class Ngrams extends TermMapping {
           }
 
           return orderedNgrams;
-        });
+        }, decay ?? 0.1);
 
+/*
   /// Remove padding from [term] where:
   /// * [termIdx] is index of term in sequence.
   /// * [termCount] is length of terms sequence.
@@ -109,16 +123,6 @@ class Ngrams extends TermMapping {
 
     return term.substring(start, end);
   }
+*/
 
-  /// Size of each ngram
-  final int n;
-
-  /// If true then padding is applied at start of string.
-  final bool padStart;
-
-  /// If true then padding is applied at end of string.
-  final bool padEnd;
-
-  /// Padding character
-  final String padChar;
 }

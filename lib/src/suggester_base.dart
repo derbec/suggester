@@ -19,13 +19,68 @@ import 'package:ternarytreap/ternarytreap.dart';
 /// in the returned sequence.
 ///
 /// The term order relects the order of characters in [suggestion].
+///
 abstract class TermMapping {
-  /// Construct [TermMapping] with specified [map] function
-  TermMapping(this.map);
+  /// Construct [TermMapping] with specified [map] function.
+  ///
+  /// Specify [termDecay] constant to control strength of term proximality effect:
+  /// * Term proximality is exponentially inversely proportional to term position.
+  /// * [termDecay]
+  /// * [termDecay] must be greater than 0 and less than 1.
+  TermMapping(this.map, this.termDecay) : _powLookup = [1] {
+    if (termDecay <= 0 || termDecay >= 1) {
+      throw ArgumentError.value(termDecay, 'Decay must be > 0 and < 1');
+    }
+  }
+
+  /// Exponential decay value for term proximality calculation.
+  final double termDecay;
+
+  /// Cache results of expensive pow operation
+  final List<double> _powLookup;
 
   /// Performs mapping
   final Iterable<String> Function(
       String suggestion, bool caseSensitive, bool unicode) map;
+
+  /// Weight terms inversely according to their proximality.
+  /// Exponential decay of [termIdx] ensures that proximal terms
+  /// are heavily weighted compared to distal.
+  ///
+  /// A higher decay factor
+  ///
+  /// ```
+  ///   1 +--------------------------------------------------------------------+
+  ///     |#**     +        +         +        +        +        +        +    |
+  /// 0.9 |#+****                                           Decay: 0.1 *******-|
+  ///     |$    ***                                         Decay: 0.5 ####### |
+  /// 0.8 |$+      **                                       Decay: 0.9 $$$$$$$-|
+  ///     |$#        ****                                                      |
+  /// 0.7 |$+#           ***                                                 +-|
+  ///     |$ #             ****                                                |
+  /// 0.6 |$+#                 ****                                          +-|
+  ///     |$  #                   *****                                        |
+  /// 0.5 |$+  #                       ****                                  +-|
+  ///     |$    #                          *****                               |
+  /// 0.4 |-$   #                               ******                       +-|
+  ///     | $    #                                   *******                   |
+  /// 0.3 |-+$    #                                        ********          +-|
+  ///     |  $     ##                                             **********   |
+  /// 0.2 |-+$      ##                                                      ***|
+  ///     |  $        ##                                                       |
+  /// 0.1 |-+ $$        ####                                                 +-|
+  ///     |     $$ +       ########   +        +        +        +        +    |
+  ///   0 +--------------------------------------------------------------------+
+  ///     0        2        4         6        8        10       12       14
+  /// ```
+  double tpFromTermIdx(int termIdx) {
+    if (termIdx >= _powLookup.length) {
+      _powLookup.add(pow(1 - termDecay, termIdx).toDouble());
+    }
+
+    // Set y intercept for numerical stability
+    return 10 * _powLookup[termIdx];
+  }
 }
 
 /// A suggestion
@@ -102,10 +157,10 @@ class Suggester {
 
   final TernaryTreapSet<Suggestion> _ternaryTreap;
 
-  int _length = 0;
-
   /// Numnber of suggestions currently available
   int get length => _length;
+
+  int _length = 0;
 
   /// Use supplied [TermMapping] to map [str] to a pairwise
   /// distinct sequence of terms.
@@ -150,7 +205,8 @@ class Suggester {
 
     var termIdx = 0;
     for (var term in terms) {
-      final suggestionObj = Suggestion._(suggestion, _tpFromTermIdx(termIdx));
+      final suggestionObj =
+          Suggestion._(suggestion, termMapping.tpFromTermIdx(termIdx));
       // Add new or retrieve current suggestion.
       _ternaryTreap.lookup(term, suggestionObj) ??
           _ternaryTreap.add(term, suggestionObj);
@@ -269,34 +325,60 @@ class Suggester {
           {bool passThroughIfNoTerms = false}) =>
       suggestFromTerms(mapTerms(str));
 
-  /// Return list of suggestions based upon [terms].
-  /// Ordered descending by weight and then lexicographically
-  /// ascending by suggestion.
-  Iterable<Suggestion> suggestFromTerms(Iterable<String> terms) {
-    if (terms == null) {
+  /// Return list of suggestions based upon [searchTerms] aquired from
+  /// a [TermMapping].
+  ///
+  /// Suggestions are ordered descending by weight and then
+  /// lexicographically ascending by suggestion.
+  ///
+  /// [Suggestion] weight is summation of the products of the following
+  /// fuctions for each search term and matched suggestion term.
+  ///
+  /// * term_proximality(searchTerm) - Rapid decay to emphasise proximal terms.
+  /// * term_proximality(suggestionTerm)
+  /// * edit_distance(searchTerm, suggestionTerm) - Linear. Due to partial matching of search terms the set of
+  /// suggestionTerms may not equal to the set of searchTerms. We want to
+  /// reward those suggestionTerms with greatest similarity to searchTerms.
+  /// * inverse_document_frequency(suggestionTerm) - Sub linear.
+  ///
+  /// The relative growth/decay rates of each function determine overall result ordering:
+  ///
+  /// term_proximality &#8811; edit_distance &#8811; inverse_document_frequency
+  Iterable<Suggestion> suggestFromTerms(Iterable<String> searchTerms) {
+    if (searchTerms == null) {
       throw ArgumentError.notNull('terms');
     }
 
-    if (terms.isEmpty) {
+    if (searchTerms.isEmpty) {
       return Iterable<Suggestion>.empty();
     }
 
     final suggestionWeights = HashMap<Suggestion, double>();
 
     var termIdx = 0;
-    for (final term in terms) {
-      final tpTerm = _tpFromTermIdx(termIdx);
-      final termSuggestions = _ternaryTreap.entriesByKeyPrefix(term);
+    for (final searchTerm in searchTerms) {
+      final editDistance = searchTerm.length;
+      final tpTerm = termMapping.tpFromTermIdx(termIdx);
+      final termSuggestions = _ternaryTreap.entriesByKeyPrefix(searchTerm);
+
+        // Partial term matching allows suggestions to occur more than once
+        // for a particular search term e.g: 
+        // 'de' may return {'dead', 'detol'}.
+        // The suggestion 'Drinking detol makes you dead' may be returned twice.
+        // In this case we need only the occurence with the highest term proximity,
+        // in this case 'detol'.
 
       for (final termSuggestion in termSuggestions) {
-        final values = termSuggestion.value;
-        if (values.isEmpty) {
+        final suggestions = termSuggestion.value;
+        if (suggestions.isEmpty) {
           throw Error();
         }
-        final idf = log(length / values.length);
-        for (final suggestion in values) {
+
+        final idf = 1 + log(length / suggestions.length);
+        for (final suggestion in suggestions) {
           final currentWeight = suggestionWeights[suggestion];
-          final weightUpdate = tpTerm * suggestion._tp * idf;
+          final weightUpdate = tpTerm * suggestion._tp * editDistance * idf;
+
           if (currentWeight == null) {
             suggestionWeights[suggestion] = weightUpdate;
           } else {
@@ -323,8 +405,3 @@ class Suggester {
     return entries.map((final entry) => entry.key);
   }
 }
-
-/// Weight terms inversely according to their proximality.
-/// Adding 1 allows distal terms to overcome proximal terms
-/// via summation.
-double _tpFromTermIdx(int termIdx) => 1 + (1 / (termIdx + 1));
