@@ -3,8 +3,10 @@ import 'package:suggester/suggester.dart';
 
 final RegExp _matchAlphaUnicode = RegExp(r'\p{L}+', unicode: true);
 final RegExp _matchAlphaAscii = RegExp(r'[a-zA-Z]+');
-final RegExp _matchAlphaAndNumeric =
+final RegExp _matchAlphaAndNumericUnicode =
     RegExp(r'[\p{L}\p{Nl}\p{Nd}]+', unicode: true);
+final RegExp _matchAlphaAndNumericAscii =
+    RegExp(r'[0-9a-zA-Z]+');
 final RegExp _matchAlphaOrNumericUnicode =
     RegExp(r'\p{L}+|[\p{Nl}\p{Nd}]+', unicode: true);
 final RegExp _matchAlphaOrNumericAscii = RegExp(r'[0-9]+|[a-zA-Z]+');
@@ -51,7 +53,7 @@ class AlphaAndNumeric extends TermMapping {
   AlphaAndNumeric({double decay})
       : super(
             (String str, bool caseSensitive, bool unicode) =>
-                LinkedHashSet<String>.from(_matchAlphaAndNumeric
+                LinkedHashSet<String>.from((unicode?_matchAlphaAndNumericUnicode:_matchAlphaAndNumericAscii)
                     .allMatches(caseSensitive ? str : str.toLowerCase())
                     .map((m) => m[0])),
             decay ?? 0.1);
