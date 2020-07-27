@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:suggester/suggester.dart';
+import 'package:suggester/term_mapping.dart';
 import 'package:test/test.dart';
 import 'emails.dart';
 
@@ -245,13 +247,20 @@ void main() {
 
       var suggestion = suggester.suggestFromTerms(terms).first;
 
-      var markTerms =
-          suggester.markTerms(terms, suggestion, (final term)=>'<strong>'+term+'</strong>');
+      var markedTerms = suggestion.mapByTerms<String>(
+          (final term) => '<strong>' + term + '</strong>',
+          (final term) => term);
 
       expect(
-          markTerms,
-          equals(
-              '<strong>Derek</strong>_Ba<strong>rto</strong>n@jar<strong>vis</strong>.com'));
+          markedTerms,
+          equals([
+            '<strong>Derek</strong>',
+            '_Ba',
+            '<strong>rto</strong>',
+            'n@jar',
+            '<strong>vis</strong>',
+            '.com'
+          ]));
 
       suggester = Suggester(Ngrams(3, padStart: true, padEnd: true));
       suggester.add('Derek_Barton@jarvis.com');
@@ -260,13 +269,53 @@ void main() {
 
       suggestion = suggester.suggestFromTerms(terms).first;
 
-      markTerms =
-          suggester.markTerms(terms, suggestion, (final term)=>'<strong>'+term+'</strong>');
+      markedTerms = suggestion.mapByTerms<String>(
+          (final term) => '<strong>' + term + '</strong>',
+          (final term) => term);
 
       expect(
-          markTerms,
-          equals(
-              '<strong>Derek</strong>_Ba<strong>rto</strong>n@jar<strong>vis</strong>.com'));
+          markedTerms,
+          equals([
+            '<strong>Derek</strong>',
+            '_Ba',
+            '<strong>rto</strong>',
+            'n@jar',
+            '<strong>vis</strong>',
+            '.com'
+          ]));
+    });
+
+    test('json', () {
+      final suggester1 = Suggester(Alpha());
+      suggester1.add('Banjo_Barton@hotmail.com');
+      suggester1.add('Tilly_Smith@jarvis.com');
+      suggester1.add('Derek_Barton@jarvis.com');
+
+      final encoded = jsonEncode(suggester1.toJson());
+
+      final suggester2 = Suggester.fromJson(Alpha(), jsonDecode(encoded));
+
+      expect(SuggesterEquality().equals(suggester1, suggester2), equals(true));
+    });
+
+    test('SuggesterEquality', () {
+      final suggester1 = Suggester(Alpha());
+      suggester1.add('Banjo_Barton@hotmail.com');
+      suggester1.add('Tilly_Smith@jarvis.com');
+      suggester1.add('Derek_Barton@jarvis.com');
+      suggester1.add('Tilly_Smith@jarvis.com');
+
+      final suggester2 = Suggester(Alpha());
+      suggester2.add('Tilly_Smith@jarvis.com');
+      suggester2.add('Derek_Barton@jarvis.com');
+      suggester2.add('Tilly_Smith@jarvis.com');
+      suggester2.add('Banjo_Barton@hotmail.com');
+
+      expect(SuggesterEquality().equals(suggester1, suggester2), equals(true));
+
+      suggester1.suggest('Derek').first.entry.accept();
+
+      expect(SuggesterEquality().equals(suggester1, suggester2), equals(false));
     });
   });
 }

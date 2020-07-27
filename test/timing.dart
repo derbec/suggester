@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:suggester/suggester.dart';
+import 'package:suggester/term_mapping.dart';
 import 'emails.dart';
 
 void main(List<String> args) {

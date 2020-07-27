@@ -1,6 +1,6 @@
 /// Support for doing something awesome.
 ///
 /// More dartdocs go here.
-library suggester;
+library term_mapping;
 
-export 'src/suggester_base.dart';
+export 'src/term_mappings.dart';

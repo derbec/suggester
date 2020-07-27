@@ -1,4 +1,3 @@
-import 'package:suggester/suggester.dart';
 
 void main() {
   //var awesome = Awesome();

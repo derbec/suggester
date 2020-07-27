@@ -1,11 +1,16 @@
 import 'dart:collection';
 import 'dart:math';
-
+import 'package:collection/collection.dart';
 import 'package:meta/meta.dart';
 import 'package:ternarytreap/ternarytreap.dart';
-import 'utility.dart';
 
-/// Maps from [suggestion] to a sequence of terms.
+const _JSONKEY_ENTRIES = 'suggestions';
+const _JSONKEY_TERMMAPPING = 'termmapping';
+const _JSONKEY_CASESENSITIVE = 'casesensitive';
+const _JSONKEY_ENTRY_VALUE = 0;
+const _JSONKEY_ENTRY_SECONDARY = 1;
+
+/// Maps from an entry to a sequence of terms.
 ///
 /// <i>f</i> :  <i>S</i> &twoheadrightarrow; <i>S</i><sup>&#8469;</sup>
 ///
@@ -17,9 +22,6 @@ import 'utility.dart';
 ///
 /// The sequence of terms is pairwise distinct, i.e. a term can occur only once
 /// in the returned sequence.
-///
-/// The term order relects the order of characters in [suggestion].
-///
 abstract class TermMapping {
   /// Construct [TermMapping] with specified [map] function.
   ///
@@ -36,12 +38,12 @@ abstract class TermMapping {
   /// Exponential decay value for term proximality calculation.
   final double termDecay;
 
-  /// Cache results of expensive pow operation
+  /// Cache results of pow operation and build lookup table
   final List<double> _powLookup;
 
   /// Performs mapping
   final Iterable<String> Function(
-      String suggestion, bool caseSensitive, bool unicode) map;
+      String entry, bool caseSensitive, bool unicode) map;
 
   /// Weight terms inversely according to their proximality.
   /// Exponential decay of [termIdx] ensures that proximal terms
@@ -75,54 +77,244 @@ abstract class TermMapping {
   /// ```
   double tpFromTermIdx(int termIdx) {
     if (termIdx >= _powLookup.length) {
-      _powLookup.add(pow(1 - termDecay, termIdx).toDouble());
+      _powLookup.length = termIdx + 1;
     }
 
-    // Set y intercept for numerical stability
+    if (_powLookup[termIdx] == null) {
+      _powLookup[termIdx] = pow(1 - termDecay, termIdx).toDouble();
+    }
+
     return _powLookup[termIdx];
   }
 }
 
-/// Represents a single suggestion string.
-@immutable
+/// Equality over [Suggester] instances.
+class SuggesterEquality implements Equality<Suggester> {
+  final _hasher = ListEquality<dynamic>();
+  @override
+  bool equals(Suggester e1, Suggester e2) {
+    if (e1.caseSensitive != e2.caseSensitive ||
+        e1.unicode != e2.unicode ||
+        e1.entries.length != e2.entries.length ||
+        e1.termMapping.toString() != e2.termMapping.toString()) {
+      return false;
+    }
+
+    for (final e1Entry in e1._entries.values) {
+      final e2Entry = e2._entries[e1Entry.value];
+
+      if (e2Entry == null) {
+        return false;
+      }
+      if (e2Entry.value != e1Entry.value ||
+          e2Entry.secondaryValue != e1Entry.secondaryValue) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @override
+  int hash(Suggester e) =>
+      _hasher.hash([e.caseSensitive, e.unicode, ...e._entries.values]);
+
+  @override
+  bool isValidKey(Object o) => o is Suggester;
+}
+
+/// Represents a single suggestion
 class Suggestion {
-  /// Construct a new [Suggestion]
-  Suggestion._(this.value, this._tp, this._popularity)
-      : assert(_popularity != null),
-        assert(value != null),
-        assert(value.isNotEmpty);
+  /// Construct a [Suggestion].
+  Suggestion._(
+      {@required this.entry,
+      @required this.searchTerms,
+      @required this.caseSensitive}) {
+    ArgumentError.checkNotNull(entry);
+  }
+
+  /// Construct a [Suggestion] from [entry]
+  Suggestion.fromEntry(Entry entry)
+      : this._(
+            entry: entry,
+            searchTerms: Iterable<String>.empty(),
+            caseSensitive: false);
+
+  /// [Entry] referenced by this [Suggestion].
+  final Entry entry;
+
+  /// The terms that led to this suggestion
+  final Iterable<String> searchTerms;
+
+  /// True if search was case sensitive, false otherwise.
+  final bool caseSensitive;
+
+  /// Split [value] by first occurance of each term in [searchTerms].
+  Iterable<T> mapByTerms<T>(
+      T Function(String term) mapTerm, T Function(String nonTerm) mapNonTerm) {
+    if (searchTerms.isEmpty) {
+      return [mapNonTerm(entry.value)];
+    }
+
+    final termSrcCase = caseSensitive ? entry.value : entry.value.toLowerCase();
+
+    final termsList = searchTerms
+        .map((final term) => (caseSensitive ? term.toLowerCase() : term).trim())
+        .toSet()
+        .toList();
+
+    // Grow by processing smaller terms first
+    // *THIS ORDERING IS NECESSARY FOR CORRECT HIGHLIGHTING OF NGRAM TERMS*
+    termsList.sort((a, b) => a.length.compareTo(b.length));
+
+    // Write all term positions to a mask
+    final mask = List<bool>.filled(termSrcCase.length, false);
+
+    // If a term is found to be completely occluded by previously processed
+    // terms then look for another match.
+    for (var term in termsList) {
+      // If this term is occluded then keep looking
+      var isOccluded = true;
+      var termSrcIdx = 0;
+      // Search for non occluded instance of term
+      while (isOccluded) {
+        termSrcIdx = termSrcCase.indexOf(term, termSrcIdx);
+        if (termSrcIdx == -1) {
+          break;
+        }
+        // Mask term instance and determine if it is occluded
+        for (var termIdx = termSrcIdx;
+            termIdx < termSrcIdx + term.length;
+            termIdx++) {
+          if (!mask[termIdx]) {
+            mask[termIdx] = true;
+            isOccluded = false;
+          }
+        }
+        termSrcIdx += term.length;
+      }
+    }
+
+    // Move through mask and build marking
+    var termSrcIdx = 0;
+    var result = <T>[];
+
+    for (var maskIdx = 0, lastMarkEnd = 0; maskIdx < mask.length;) {
+      if (mask[maskIdx]) {
+        final skip = maskIdx - lastMarkEnd;
+        maskIdx++;
+        var length = 1;
+        while (maskIdx < mask.length && mask[maskIdx]) {
+          maskIdx++;
+          length++;
+        }
+
+        if (skip > 0) {
+          result.add(
+              mapNonTerm(entry.value.substring(termSrcIdx, termSrcIdx + skip)));
+        }
+
+        termSrcIdx += skip;
+
+        result.add(
+            mapTerm(entry.value.substring(termSrcIdx, termSrcIdx + length)));
+        termSrcIdx += length;
+
+        lastMarkEnd += skip + length;
+      } else {
+        maskIdx++;
+      }
+    }
+    if (termSrcIdx < entry.value.length) {
+      result.add(mapNonTerm(entry.value.substring(termSrcIdx)));
+    }
+    return result;
+  }
+}
+
+/// Represents a single value to be returned as a suggestion.
+class Entry {
+  /// Construct a new [Entry]
+  /// Throws exception if [value] is null or empty.
+  Entry._(String value, {int secondaryValue})
+      : value = value,
+        _secondaryValue = secondaryValue ?? 0 {
+    ArgumentError.checkNotNull(value);
+    if (value.isEmpty) {
+      throw ArgumentError('value.isEmpty');
+    }
+  }
+
+  /// Construct a new [Entry] from json representing values
+  /// to be shared between all instances of [Entry] with same value.
+  Entry._fromJson(dynamic json)
+      : this._(json[_JSONKEY_ENTRY_VALUE] as String,
+            secondaryValue: json[_JSONKEY_ENTRY_SECONDARY] as int);
 
   /// The original suggestion string supplied by client.
   final String value;
 
-  /// Popularity of suggestion.
-  /// Value is proportional to number of times [Suggester.acceptSuggestion]
-  /// is called with this [Suggestion] as argument.
-  int get popularity => _popularity.value;
+  int _secondaryValue;
 
-  /// Term proximality for this suggestion
-  final double _tp;
+  /// Allows differentiation between entries of equal weight.
+  int get secondaryValue => _secondaryValue;
 
-  final ByRef<int> _popularity;
+  /// Process the event that user has accepted this entry as a suggestion.
+  ///
+  /// If [secondaryValue] not provided then secondary value incremented by 1
+  /// with result that more recently selected entries are given
+  /// higher priority.
+  void accept({int secondaryValue}) {
+    _secondaryValue = secondaryValue ?? _secondaryValue + 1;
+  }
 
+  /// Two suggestions are equal if they have the same [value].
   @override
   bool operator ==(final dynamic other) =>
-      identical(this, other) || value == other.value;
+      identical(this, other) || (other is Entry && value == other.value);
 
   @override
   int get hashCode => value.hashCode;
 
   @override
   String toString() => value;
+
+  /// Return json representation of entry
+  dynamic _toJson() => [value, secondaryValue];
 }
 
-class _TermDistanceSuggestion {
-  _TermDistanceSuggestion(this.termDistance, this.suggestion)
-      : assert(termDistance != null),
-        assert(suggestion != null);
+/// A relation between a [Entry] and a term index.
+@immutable
+class _EntryTermIdx {
+  _EntryTermIdx(this.entry, this.termIdx)
+      : assert(!identical(termIdx, null)),
+        assert(!identical(entry, null));
+
+  /// Term index for [Entry]
+  final int termIdx;
+
+  final Entry entry;
+
+  /// Two [_EntryTermIdx] instances are equal if they point to
+  /// same [Entry].
+  ///
+  /// See [Suggester._addEntry] to understand why.
+  @override
+  bool operator ==(final dynamic other) =>
+      identical(this, other) ||
+      (other is _EntryTermIdx && entry == other.entry);
+
+  @override
+  int get hashCode => entry.hashCode;
+}
+
+@immutable
+class _TermDistanceEntry {
+  _TermDistanceEntry(this.termDistance, this.entryTermIdx)
+      : assert(!identical(termDistance, null)),
+        assert(!identical(entryTermIdx, null));
 
   final int termDistance;
-  final Suggestion suggestion;
+  final _EntryTermIdx entryTermIdx;
 }
 
 /// Suggests text completions.
@@ -155,47 +347,77 @@ class _TermDistanceSuggestion {
 /// 1. blah
 ///
 class Suggester {
-  /// Construct a new [Suggester]
-  Suggester(this.termMapping,
-      {this.caseSensitive = false,
-      this.unicode = true,
-      this.predictFirstTerm = false})
-      : _ttMultiMap = TTMultiMapSet<Suggestion>();
+  Suggester._(this.termMapping, this.caseSensitive, this.unicode, this._entries,
+      Iterable<Entry> initEntries)
+      : _ttMultiMap = TTMultiMapSet<_EntryTermIdx>(),
+        entries = UnmodifiableMapView(_entries) {
+    ArgumentError.checkNotNull(termMapping);
+    ArgumentError.checkNotNull(caseSensitive);
+    ArgumentError.checkNotNull(unicode);
 
-  /// When user begins entering input try to predict inital term based upon previous selections
-  final bool predictFirstTerm;
+    if (!identical(initEntries, null)) {
+      for (final suggestion in initEntries) {
+        _addEntry(suggestion);
+      }
+    }
+  }
+
+  /// Construct a new [Suggester]
+  Suggester(TermMapping termMapping,
+      {bool caseSensitive = false, bool unicode = true})
+      : this._(termMapping, caseSensitive, unicode, <String, Entry>{}, null);
+
+  /// Construct a new [Suggester] from [json].
+  Suggester.fromJson(TermMapping termMapping, dynamic json,
+      {bool unicode = true})
+      : this._(
+            termMapping.runtimeType.toString() == json[_JSONKEY_TERMMAPPING]
+                ? termMapping
+                : throw ArgumentError.value(json,
+                    'Expected termMapping:${termMapping.runtimeType.toString()}, got termMapping:${json[_JSONKEY_TERMMAPPING]}'),
+            json[_JSONKEY_CASESENSITIVE] as bool,
+            unicode,
+            <String, Entry>{},
+            (json[_JSONKEY_ENTRIES] as List).map((e) => Entry._fromJson(e)));
 
   /// Specify case sensitivity of [termMapping].
   final bool caseSensitive;
 
   /// Specify if [termMapping] uses unicode or ascii RegExp.
+  /// Javascript has trouble with Unicode RegExp so set to false if
+  /// running in browser.
   final bool unicode;
 
-  /// The [TermMapping] used to convert suggestions to a list of terms.
+  /// The [TermMapping] used to convert an entry to a list of terms.
   final TermMapping termMapping;
 
-  final TTMultiMapSet<Suggestion> _ttMultiMap;
+  /// Store relation from term to entry
+  final TTMultiMapSet<_EntryTermIdx> _ttMultiMap;
 
-  /// Numnber of suggestions currently available
-  int get length => _length;
+  /// All current entries
+  final UnmodifiableMapView<String, Entry> entries;
 
-  int _length = 0;
+  /// All current entries
+  final Map<String, Entry> _entries;
 
-  /// Length of longest suggestion term yet encountered.
-  /// Used to normalise searchTerms when suggesting.
-  int _maxTermLength = 0;
+  /// Length of longest term yet encountered.
+  /// Used to normalise searchTerm length when suggesting.
+  int _currentMaxTermLength = 0;
 
-  /// Add [suggestion] for to the list of possible suggestions
+  /// Add [entry] to the set of possible suggestions.
+  /// Update [entry.secondaryValue]
   ///
-  /// If [suggestion] is null or empty then throws [ArgumentError].
+  /// If [entry] is null or empty then throws [ArgumentError].
   ///
-  /// If [suggestion] cannot be mapped to at least 1 key via specified [TermMapping]
+  /// If [entry] cannot be mapped to at least 1 key via specified [TermMapping]
   /// then it is not added and return value is false.
   ///
-  /// If [suggestion] is successfully added then return value is true.
-  bool add(String suggestion) {
+  /// If [entry] is successfully added then return value is true.
+  bool _addEntry(Entry entry) {
+    _entries[entry.value] = entry;
+
     // Transform term into list of distinct keys and map them to term
-    final terms = mapTerms(suggestion);
+    final terms = mapTerms(entry.value);
 
     // Unable to add this suggestion
     if (terms.isEmpty) {
@@ -204,156 +426,97 @@ class Suggester {
 
     var termIdx = 0;
     for (var term in terms) {
-      if (term.length > _maxTermLength) {
-        _maxTermLength = term.length;
+      if (term.length > _currentMaxTermLength) {
+        _currentMaxTermLength = term.length;
       }
-      final suggestionObj = Suggestion._(
-          suggestion, termMapping.tpFromTermIdx(termIdx), ByRef<int>(0));
-      // Add new or retrieve current suggestion.
-      if (_ttMultiMap.lookup(term, suggestionObj) == null) {
-        _ttMultiMap.add(term, suggestionObj);
+      // Entry should only be associated with each term once
+      // This is why [_EntryTermIdx] bases equality testing
+      // on it's Suggestion member only.
+      if (!_ttMultiMap.add(term, _EntryTermIdx(entry, termIdx))) {
+        throw AssertionError('Term mapping returned duplicate term');
       }
+
       termIdx++;
     }
 
-    _length++;
     return true;
   }
 
-  /// Equivilent to [add] for all [suggestions].
+  /// Add [entry] to the set of possible suggestions.
+  /// Update [entry.secondaryValue]
   ///
-  /// Throws [ArgumentError] if [add] fails.
-  void addAll(Iterable<String> suggestions) =>
-      suggestions.forEach((final suggestion) {
+  /// If [entry] is null or empty then throws [ArgumentError].
+  ///
+  /// If [entry] cannot be mapped to at least 1 key via specified [TermMapping]
+  /// then it is not added and return value is false.
+  ///
+  /// If [entry] is successfully added or already exists then return value is true.
+  bool add(String entry, {int secondaryValue = 0}) {
+    if (_entries.containsKey(entry)) {
+      // we already know this suggestion so just update its secondary value
+      if (!identical(secondaryValue, null)) {
+        _entries[entry]._secondaryValue = secondaryValue;
+      }
+      return true;
+    }
+
+    return _addEntry(Entry._(entry, secondaryValue: secondaryValue));
+  }
+
+  /// Equivilent to [add] for all [entries].
+  ///
+  /// Throws [ArgumentError] if [add] fails for an entry.
+  void addAll(Iterable<String> entries) => entries.forEach((final suggestion) {
         if (!add(suggestion)) {
           throw ArgumentError.value(
-              suggestion, 'suggestions', 'Failed to add suggestion');
+              suggestion, 'entries', 'Failed to add entry');
         }
       });
 
   /// Use supplied [TermMapping] to map [str] to a pairwise
   /// distinct sequence of terms.
-  Iterable<String> mapTerms(String suggestion) {
-    ArgumentError.checkNotNull(suggestion, 'suggestion');
-    if (suggestion.isEmpty) {
-      throw ArgumentError.value('suggestion is empty');
+  Iterable<String> mapTerms(String entry) {
+    ArgumentError.checkNotNull(entry, 'suggestion');
+    if (entry.isEmpty) {
+      return Iterable<String>.empty();
     }
 
-    final terms = termMapping.map(suggestion, caseSensitive, unicode);
+    final terms = termMapping.map(entry, caseSensitive, unicode);
 
     return terms;
-  }
-
-  /// Mark tags
-  String markTerms(Iterable<String> terms, Suggestion suggestion,
-      String Function(String term) mark) {
-    ArgumentError.checkNotNull(terms, 'terms');
-    ArgumentError.checkNotNull(suggestion, 'suggestion');
-    if (terms.isEmpty) {
-      throw ArgumentError.value('terms is empty');
-    }
-
-    final suggestionValue = suggestion.value;
-    final suggestionCase =
-        caseSensitive ? suggestionValue : suggestionValue.toLowerCase();
-
-    final termsList = terms.map((final term) => term.trim()).toSet().toList();
-
-    // Grow by processing smaller terms first
-    // *THIS ORDERING IS NECESSARY FOR CORRECT HIGHLIGHTING OF NGRAM TERMS*
-    termsList.sort((a, b) => a.length.compareTo(b.length));
-
-    // Write all term positions to a mask
-    final mask = List<bool>.filled(suggestionCase.length, false);
-
-    // If a term is found to be completely occluded by previously processed
-    // terms then look for another match.
-    for (var term in termsList) {
-      // If this term is occluded then keep looking
-      var isOccluded = true;
-      var suggestionIdx = 0;
-      // Search for non occluded instance of term
-      while (isOccluded) {
-        suggestionIdx = suggestionCase.indexOf(term, suggestionIdx);
-        if (suggestionIdx == -1) {
-          break;
-        }
-        // Mask term instance and determine if it is occluded
-        for (var termIdx = suggestionIdx;
-            termIdx < suggestionIdx + term.length;
-            termIdx++) {
-          if (!mask[termIdx]) {
-            mask[termIdx] = true;
-            isOccluded = false;
-          }
-        }
-        suggestionIdx += term.length;
-      }
-    }
-
-    // Move through mask and perform marking
-    var maskIdx = 0;
-    var lastMarkEnd = 0;
-    var suggestionIdx = 0;
-    var buffer = StringBuffer();
-
-    while (maskIdx < mask.length) {
-      if (mask[maskIdx]) {
-        final skip = maskIdx - lastMarkEnd;
-        maskIdx++;
-        var length = 1;
-        while (maskIdx < mask.length && mask[maskIdx]) {
-          maskIdx++;
-          length++;
-        }
-
-        buffer.write(
-            suggestionValue.substring(suggestionIdx, suggestionIdx + skip));
-        suggestionIdx += skip;
-
-        buffer.write(mark(
-            suggestionValue.substring(suggestionIdx, suggestionIdx + length)));
-        suggestionIdx += length;
-
-        lastMarkEnd += skip + length;
-      } else {
-        maskIdx++;
-      }
-    }
-    buffer.write(suggestionValue.substring(suggestionIdx));
-    return buffer.toString();
   }
 
   /// Return approximate size of [Suggester] instance in memory
   int sizeOf() {
     const SIZE_OF_INT = 4;
-    // Strings are shared between multiple instances of Suggestion.
-    // Get all unique suggestions strings and find total size of strings
-    final uniqueSuggestions = _ttMultiMap.values.toSet();
-    var suggestionStringBytes = 0;
-    for (final suggestion in uniqueSuggestions) {
-      suggestionStringBytes += suggestion.value.codeUnits.length * SIZE_OF_INT;
+    // Strings are shared between multiple instances of Entry.
+    // Get all unique Entry strings and find total size of strings
+    final uniqueEntries = _ttMultiMap.values.toSet();
+    var entryStringBytes = 0;
+    for (final entryTerm in uniqueEntries) {
+      entryStringBytes += entryTerm.entry.value.codeUnits.length * SIZE_OF_INT;
     }
 
     // Add to size of underlying TernaryTreap accounting for _tp field
     // that is unique to each Suggestion instance.
-    return suggestionStringBytes + _ttMultiMap.sizeOf(SIZE_OF_INT);
+    return entryStringBytes + _ttMultiMap.sizeOf(SIZE_OF_INT);
   }
 
-  /// Return list of suggestions based upon [searchString].
-  /// Ordered descending by weight and then ascending by term.
+  /// Return list of [Suggestion] based upon [searchString].
   ///
-  /// Throws exception if [searchString] does not map to any terms.
-  Iterable<Suggestion> suggest(String searchString) =>
-      suggestFromTerms(mapTerms(searchString));
+  /// see: [suggestFromTerms] for details of operation.
+  Iterable<Suggestion> suggest(String searchString,
+          {int maxEditDistance = 0}) =>
+      suggestFromTerms(mapTerms(searchString),
+          maxEditDistance: maxEditDistance);
 
-  /// Return list of suggestions based upon [searchTerms] aquired from
+  /// Return list of [Suggestion] based upon [searchTerms] aquired from
   /// a [TermMapping].
   ///
   /// Suggestions are ordered descending by weight and then
   /// lexicographically ascending by suggestion.
   ///
-  /// [Suggestion] weight is summation of the products of the following
+  /// [Entry] weight is summation of the products of the following
   /// fuctions for each search term and matched suggestion term.
   ///
   /// * term_proximality(searchTerm) - Rapid decay to emphasise proximal terms.
@@ -370,42 +533,32 @@ class Suggester {
   /// If [predictFirstTerm] is true then [Suggester] will search for a previously promoted
   /// Suggestion prefixed by [searchTerms][0].
   Iterable<Suggestion> suggestFromTerms(Iterable<String> searchTerms,
-      {int maxEditDistance = 1}) {
+      {int maxEditDistance = 0}) {
     ArgumentError.checkNotNull(searchTerms, 'searchTerms');
     ArgumentError.checkNotNull(maxEditDistance, 'maxEditDistance');
-    ArgumentError.checkNotNull(predictFirstTerm, 'expandFirstTerm');
-
-    if (searchTerms.isEmpty) {
-      throw ArgumentError.value(searchTerms, 'searchTerms.isEmpty');
-    }
 
     if (maxEditDistance < 0) {
       throw ArgumentError.value(maxEditDistance, 'maxEditDistance < 0');
     }
 
-    if (length < 1) {
+    if (entries.isEmpty) {
       return Iterable<Suggestion>.empty();
     }
 
-    if (predictFirstTerm && searchTerms.length == 1) {
-      final expansion = _ttMultiMap.lastMarkedKeyByPrefix(searchTerms.first);
-      if (expansion != null) {
-        searchTerms = [expansion];
-      }
+    if (searchTerms.isEmpty) {
+      return Iterable<Suggestion>.empty();
     }
 
-    final suggestionWeights = HashMap<Suggestion, double>();
+    final entryWeights = HashMap<Entry, double>();
 
     var termIdx = 0;
     for (final searchTerm in searchTerms) {
       final tpTerm = termMapping.tpFromTermIdx(termIdx);
-      final termSuggestions = _ttMultiMap
-          .valuesByKeyPrefix(searchTerm,
-              maxPrefixEditDistance:
-                  searchTerm.length > 1 ? maxEditDistance : 0)
+      final termEntries = _ttMultiMap
+          .valuesByKeyPrefix(searchTerm, maxPrefixEditDistance: maxEditDistance)
           .iterator;
 
-      // Partial term matching allows suggestions to occur more than once
+      // Partial term matching allows entries to occur more than once
       // for a particular search term e.g:
       // 'de' may return {'dead', 'detol'}.
       // The suggestion 'Drinking detol makes you dead' may be returned twice.
@@ -413,53 +566,58 @@ class Suggester {
       // in this case 'detol'.
       // Suggestions from terms with a lower edit distance are prioritised
       // over those with a higher edit distance.
-      final uniqueTermSuggestions = <Suggestion, _TermDistanceSuggestion>{};
+      final uniqueTermEntries = <Entry, _TermDistanceEntry>{};
 
-      while (termSuggestions.moveNext()) {
-        final termSuggestion = termSuggestions.current;
-        final currentHighest = uniqueTermSuggestions[termSuggestion];
+      while (termEntries.moveNext()) {
+        final termEntry = termEntries.current;
+        final currentBest = uniqueTermEntries[termEntry.entry];
 
-        if (currentHighest == null) {
-          uniqueTermSuggestions[termSuggestion] = _TermDistanceSuggestion(
-              termSuggestions.prefixEditDistance, termSuggestion);
-        } else if (termSuggestions.prefixEditDistance <=
-                currentHighest.termDistance &&
-            termSuggestion._tp > currentHighest.suggestion._tp) {
-          uniqueTermSuggestions.remove(termSuggestion);
-          uniqueTermSuggestions[termSuggestion] = _TermDistanceSuggestion(
-              termSuggestions.prefixEditDistance, termSuggestion);
+        if (identical(currentBest, null)) {
+          uniqueTermEntries[termEntry.entry] =
+              _TermDistanceEntry(termEntries.prefixEditDistance, termEntry);
+        } else if (termEntries.prefixEditDistance <= currentBest.termDistance &&
+            termEntry.termIdx < currentBest.entryTermIdx.termIdx) {
+          uniqueTermEntries.remove(termEntry.entry);
+          uniqueTermEntries[termEntry.entry] =
+              _TermDistanceEntry(termEntries.prefixEditDistance, termEntry);
         }
       }
 
       // scale by the discriminating power of these partial term matches
-      final idf = 1 + log(length / uniqueTermSuggestions.length);
-      for (final suggestionDistance in uniqueTermSuggestions.values) {
-        final suggestion = suggestionDistance.suggestion;
-        final termLength =
-            (searchTerm.length - suggestionDistance.termDistance) /
-                _maxTermLength;
-        final weightUpdate = tpTerm * suggestion._tp * termLength * idf;
+      final idf = 1 + log(entries.length / uniqueTermEntries.length);
+      for (final entryDistance in uniqueTermEntries.values) {
+        final termEntry = entryDistance.entryTermIdx;
+        // Longer search terms carry more weight than shorter search terms.
+        // Reduce by distance and compare to longest known term.
+        final termLengthWeight =
+            (searchTerm.length - entryDistance.termDistance) /
+                _currentMaxTermLength;
 
-        final currentWeight = suggestionWeights[suggestion];
+        final weightUpdate = tpTerm *
+            termMapping.tpFromTermIdx(termEntry.termIdx) *
+            termLengthWeight *
+            idf;
 
-        if (currentWeight == null) {
-          suggestionWeights[suggestion] = weightUpdate;
+        final currentWeight = entryWeights[termEntry.entry];
+
+        if (identical(currentWeight, null)) {
+          entryWeights[termEntry.entry] = weightUpdate;
         } else {
-          suggestionWeights[suggestion] = currentWeight + weightUpdate;
+          entryWeights[termEntry.entry] = currentWeight + weightUpdate;
         }
       }
 
       termIdx++;
     }
 
-    final entries = suggestionWeights.entries.toList()
+    final sorted = entryWeights.entries.toList()
       ..sort((final e1, final e2) {
         // Sort first by total weight descending
         var diff = e2.value.compareTo(e1.value);
 
-        // Then by popularity descending
+        // Then by last accepted timestamp descending
         if (diff == 0) {
-          diff = e2.key._popularity.value.compareTo(e1.key._popularity.value);
+          diff = e2.key.secondaryValue.compareTo(e1.key.secondaryValue);
         }
 
         // Then by suggestion string value ascending
@@ -470,19 +628,16 @@ class Suggester {
         return diff;
       });
 
-    return entries.map((final entry) => entry.key);
+    return sorted.map((final entry) => Suggestion._(
+        entry: entry.key,
+        searchTerms: searchTerms,
+        caseSensitive: caseSensitive));
   }
 
-  /// Process the event that user has accepted a suggestion
-  void acceptSuggestion(Suggestion suggestion) {
-    if (predictFirstTerm) {
-      final terms = mapTerms(suggestion.value);
-      if (terms.isEmpty) {
-        throw ArgumentError.value('suggestion contains no terms');
-      }
-
-      _ttMultiMap.markKey(terms.first);
-    }
-    suggestion._popularity.value++;
-  }
+  /// Return json encodable object representing this [Suggester]
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        _JSONKEY_TERMMAPPING: termMapping.runtimeType.toString(),
+        _JSONKEY_CASESENSITIVE: caseSensitive,
+        _JSONKEY_ENTRIES: _entries.values.map((e) => e._toJson()).toList()
+      };
 }

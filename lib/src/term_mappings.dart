@@ -5,8 +5,7 @@ final RegExp _matchAlphaUnicode = RegExp(r'\p{L}+', unicode: true);
 final RegExp _matchAlphaAscii = RegExp(r'[a-zA-Z]+');
 final RegExp _matchAlphaAndNumericUnicode =
     RegExp(r'[\p{L}\p{Nl}\p{Nd}]+', unicode: true);
-final RegExp _matchAlphaAndNumericAscii =
-    RegExp(r'[0-9a-zA-Z]+');
+final RegExp _matchAlphaAndNumericAscii = RegExp(r'[0-9a-zA-Z]+');
 final RegExp _matchAlphaOrNumericUnicode =
     RegExp(r'\p{L}+|[\p{Nl}\p{Nd}]+', unicode: true);
 final RegExp _matchAlphaOrNumericAscii = RegExp(r'[0-9]+|[a-zA-Z]+');
@@ -19,7 +18,7 @@ String _collapseWhitespace(String str, bool unicode) => str
     .trim()
     .replaceAll(unicode ? _matchSeparatorUnicode : _matchSeparatorAscii, ' ');
 
-/// Match runs of alphanumeric characters seperated by non alphanuermic characters
+/// Match runs of alphanumeric characters seperated by separators
 class Tokens extends TermMapping {
   /// Construct tokens
   Tokens({double decay})
@@ -53,7 +52,9 @@ class AlphaAndNumeric extends TermMapping {
   AlphaAndNumeric({double decay})
       : super(
             (String str, bool caseSensitive, bool unicode) =>
-                LinkedHashSet<String>.from((unicode?_matchAlphaAndNumericUnicode:_matchAlphaAndNumericAscii)
+                LinkedHashSet<String>.from((unicode
+                        ? _matchAlphaAndNumericUnicode
+                        : _matchAlphaAndNumericAscii)
                     .allMatches(caseSensitive ? str : str.toLowerCase())
                     .map((m) => m[0])),
             decay ?? 0.1);
@@ -112,19 +113,4 @@ class Ngrams extends TermMapping {
 
           return orderedNgrams;
         }, decay ?? 0.1);
-
-/*
-  /// Remove padding from [term] where:
-  /// * [termIdx] is index of term in sequence.
-  /// * [termCount] is length of terms sequence.
-  String _unpad(String term, int termIdx, int termCount) {
-    final start = padStart && (termIdx < n - 1) ? (n - termIdx - 1) : 0;
-    final end = padEnd && (termIdx > (termCount - n))
-        ? (term.length - (n - (termCount - termIdx)))
-        : term.length;
-
-    return term.substring(start, end);
-  }
-*/
-
 }
