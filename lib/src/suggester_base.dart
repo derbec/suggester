@@ -4,9 +4,9 @@ import 'package:collection/collection.dart';
 import 'package:meta/meta.dart';
 import 'package:ternarytreap/ternarytreap.dart';
 
-const _JSONKEY_ENTRIES = 'suggestions';
-const _JSONKEY_TERMMAPPING = 'termmapping';
-const _JSONKEY_CASESENSITIVE = 'casesensitive';
+const _JSONKEY_ENTRIES = 'a';
+const _JSONKEY_TERMMAPPING = 'b';
+const _JSONKEY_CASESENSITIVE = 'c';
 const _JSONKEY_ENTRY_VALUE = 0;
 const _JSONKEY_ENTRY_SECONDARY = 1;
 
@@ -400,10 +400,6 @@ class Suggester {
   /// All current entries
   final Map<String, Entry> _entries;
 
-  /// Length of longest term yet encountered.
-  /// Used to normalise searchTerm length when suggesting.
-  int _currentMaxTermLength = 0;
-
   /// Add [entry] to the set of possible suggestions.
   /// Update [entry.secondaryValue]
   ///
@@ -426,9 +422,6 @@ class Suggester {
 
     var termIdx = 0;
     for (var term in terms) {
-      if (term.length > _currentMaxTermLength) {
-        _currentMaxTermLength = term.length;
-      }
       // Entry should only be associated with each term once
       // This is why [_EntryTermIdx] bases equality testing
       // on it's Suggestion member only.
@@ -523,7 +516,6 @@ class Suggester {
   /// * term_proximality(suggestionTerm)
   /// * term_length(searchTerm, suggestionTerm) - Linear. Longer search terms typically
   /// carry more confidence, i.e. sheepdog > dog. This is reduced by edit_distance.
-  /// Normalised against length of longest term yet encountered.
   /// * inverse_document_frequency(suggestionTerm) - Sub linear.
   ///
   /// The relative growth/decay rates of each function determine overall result ordering:
@@ -590,8 +582,7 @@ class Suggester {
         // Longer search terms carry more weight than shorter search terms.
         // Reduce by distance and compare to longest known term.
         final termLengthWeight =
-            (searchTerm.length - entryDistance.termDistance) /
-                _currentMaxTermLength;
+            (searchTerm.length - entryDistance.termDistance);
 
         final weightUpdate = tpTerm *
             termMapping.tpFromTermIdx(termEntry.termIdx) *
