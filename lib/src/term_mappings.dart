@@ -21,7 +21,7 @@ String _collapseWhitespace(String str, bool unicode) => str
 /// Match runs of alphanumeric characters seperated by separators
 class Tokens extends TermMapping {
   /// Construct tokens
-  Tokens({double decay})
+  Tokens({double decay = 0.1})
       : super(
             (String str, bool caseSensitive, bool unicode) =>
                 LinkedHashSet<String>.from((caseSensitive
@@ -30,26 +30,26 @@ class Tokens extends TermMapping {
                     .split(
                         unicode ? _matchSeparatorUnicode : _matchSeparatorAscii)
                     .where((final term) => term.isNotEmpty)),
-            decay ?? 0.1);
+            decay);
 }
 
 /// Each term represents a run of Letters
 class Alpha extends TermMapping {
   /// Construct tokens
-  Alpha({double decay})
+  Alpha({double decay = 0.1})
       : super(
             (String str, bool caseSensitive, bool unicode) =>
                 LinkedHashSet<String>.from(
                     (unicode ? _matchAlphaUnicode : _matchAlphaAscii)
                         .allMatches(caseSensitive ? str : str.toLowerCase())
                         .map((m) => m[0])),
-            decay ?? 0.1);
+            decay);
 }
 
 /// Each term represents a run of Letters and Numbers
 class AlphaAndNumeric extends TermMapping {
   /// Construct tokens
-  AlphaAndNumeric({double decay})
+  AlphaAndNumeric({double decay = 0.1})
       : super(
             (String str, bool caseSensitive, bool unicode) =>
                 LinkedHashSet<String>.from((unicode
@@ -57,13 +57,13 @@ class AlphaAndNumeric extends TermMapping {
                         : _matchAlphaAndNumericAscii)
                     .allMatches(caseSensitive ? str : str.toLowerCase())
                     .map((m) => m[0])),
-            decay ?? 0.1);
+            decay);
 }
 
 /// Each term represents a run of Letters or Numbers
 class AlphaOrNumeric extends TermMapping {
   /// Construct tokens
-  AlphaOrNumeric({double decay})
+  AlphaOrNumeric({double decay = 0.1})
       : super(
             (String str, bool caseSensitive, bool unicode) =>
                 LinkedHashSet<String>.from((unicode
@@ -71,17 +71,21 @@ class AlphaOrNumeric extends TermMapping {
                         : _matchAlphaOrNumericAscii)
                     .allMatches(caseSensitive ? str : str.toLowerCase())
                     .map((m) => m[0])),
-            decay ?? 0.1);
+            decay);
 }
 
 /// Create ngrams of specified size and padding character
 class Ngrams extends TermMapping {
   /// Construct [Ngrams] with gram size.
-  Ngrams(int n, {double decay, bool padStart, bool padEnd, String padChar})
+  Ngrams(int n,
+      {double decay = 0.1,
+      bool padStart = false,
+      bool padEnd = false,
+      String padChar = '\u00A0'})
       : super((String str, bool caseSensitive, bool unicode) {
-          padStart = padStart ?? false;
-          padEnd = padEnd ?? false;
-          padChar = padChar ?? '\u00A0';
+          padStart = padStart;
+          padEnd = padEnd;
+          padChar = padChar;
           final orderedNgrams =
               LinkedHashSet<String>(); // ignore: prefer_collection_literals
 
@@ -112,5 +116,5 @@ class Ngrams extends TermMapping {
           }
 
           return orderedNgrams;
-        }, decay ?? 0.1);
+        }, decay);
 }

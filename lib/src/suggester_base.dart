@@ -76,12 +76,9 @@ abstract class TermMapping {
   ///     0        2        4         6        8        10       12       14
   /// ```
   double tpFromTermIdx(int termIdx) {
-    if (termIdx >= _powLookup.length) {
-      _powLookup.length = termIdx + 1;
-    }
-
-    if (_powLookup[termIdx] == null) {
-      _powLookup[termIdx] = pow(1 - termDecay, termIdx).toDouble();
+    // Cannot assume termIdxs are requested sequentially
+    while (termIdx >= _powLookup.length) {
+      _powLookup.add(pow(1 - termDecay, _powLookup.length).toDouble());
     }
 
     return _powLookup[termIdx];
@@ -119,16 +116,16 @@ class SuggesterEquality implements Equality<Suggester> {
       _hasher.hash([e.caseSensitive, e.unicode, ...e._entries.values]);
 
   @override
-  bool isValidKey(Object o) => o is Suggester;
+  bool isValidKey(Object? o) => o is Suggester;
 }
 
 /// Represents a single suggestion
 class Suggestion {
   /// Construct a [Suggestion].
   Suggestion._(
-      {@required this.entry,
-      @required this.searchTerms,
-      @required this.caseSensitive}) {
+      {required this.entry,
+      required this.searchTerms,
+      required this.caseSensitive}) {
     ArgumentError.checkNotNull(entry);
   }
 
@@ -148,7 +145,7 @@ class Suggestion {
   /// True if search was case sensitive, false otherwise.
   final bool caseSensitive;
 
-  /// Split [value] by first occurance of each term in [searchTerms].
+  /// Split [entry] by first occurance of each term in [searchTerms].
   Iterable<T> mapByTerms<T>(
       T Function(String term) mapTerm, T Function(String nonTerm) mapNonTerm) {
     if (searchTerms.isEmpty) {
@@ -235,7 +232,7 @@ class Suggestion {
 class Entry {
   /// Construct a new [Entry]
   /// Throws exception if [value] is null or empty.
-  Entry._(String value, {int secondaryValue})
+  Entry._(String value, {int? secondaryValue})
       : value = value,
         _secondaryValue = secondaryValue ?? 0 {
     ArgumentError.checkNotNull(value);
@@ -263,7 +260,7 @@ class Entry {
   /// If [secondaryValue] not provided then secondary value incremented by 1
   /// with result that more recently selected entries are given
   /// higher priority.
-  void accept({int secondaryValue}) {
+  void accept({int? secondaryValue}) {
     _secondaryValue = secondaryValue ?? _secondaryValue + 1;
   }
 
@@ -348,7 +345,7 @@ class _TermDistanceEntry {
 ///
 class Suggester {
   Suggester._(this.termMapping, this.caseSensitive, this.unicode, this._entries,
-      Iterable<Entry> initEntries)
+      Iterable<Entry>? initEntries)
       : _ttMultiMap = TTMultiMapSet<_EntryTermIdx>(),
         entries = UnmodifiableMapView(_entries) {
     ArgumentError.checkNotNull(termMapping);
@@ -435,25 +432,26 @@ class Suggester {
     return true;
   }
 
-  /// Add [entry] to the set of possible suggestions.
-  /// Update [entry.secondaryValue]
+  /// Add [entryTitle] to the set of possible suggestions.
+  /// Update [entryTitle.secondaryValue]
   ///
-  /// If [entry] is null or empty then throws [ArgumentError].
+  /// If [entryTitle] is null or empty then throws [ArgumentError].
   ///
-  /// If [entry] cannot be mapped to at least 1 key via specified [TermMapping]
+  /// If [entryTitle] cannot be mapped to at least 1 key via specified [TermMapping]
   /// then it is not added and return value is false.
   ///
-  /// If [entry] is successfully added or already exists then return value is true.
-  bool add(String entry, {int secondaryValue = 0}) {
-    if (_entries.containsKey(entry)) {
+  /// If [entryTitle] is successfully added or already exists then return value is true.
+  bool add(String entryTitle, {int? secondaryValue}) {
+    final entry = _entries[entryTitle];
+    if (!identical(entry, null)) {
       // we already know this suggestion so just update its secondary value
       if (!identical(secondaryValue, null)) {
-        _entries[entry]._secondaryValue = secondaryValue;
+        entry._secondaryValue = secondaryValue;
       }
       return true;
     }
 
-    return _addEntry(Entry._(entry, secondaryValue: secondaryValue));
+    return _addEntry(Entry._(entryTitle, secondaryValue: secondaryValue));
   }
 
   /// Equivilent to [add] for all [entries].
@@ -466,7 +464,7 @@ class Suggester {
         }
       });
 
-  /// Use supplied [TermMapping] to map [str] to a pairwise
+  /// Use supplied [TermMapping] to map [entry] to a pairwise
   /// distinct sequence of terms.
   Iterable<String> mapTerms(String entry) {
     ArgumentError.checkNotNull(entry, 'suggestion');
@@ -521,9 +519,6 @@ class Suggester {
   /// The relative growth/decay rates of each function determine overall result ordering:
   ///
   /// term_proximality &#8811; edit_distance &#8811; inverse_document_frequency
-  ///
-  /// If [predictFirstTerm] is true then [Suggester] will search for a previously promoted
-  /// Suggestion prefixed by [searchTerms][0].
   Iterable<Suggestion> suggestFromTerms(Iterable<String> searchTerms,
       {int maxEditDistance = 0}) {
     ArgumentError.checkNotNull(searchTerms, 'searchTerms');

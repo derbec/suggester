@@ -9,6 +9,19 @@ void main() {
     setUp(() {});
 
     test('KeysMapping: Text', () {
+      // Check term proximality calculated correctly
+      final tokens = Tokens();
+
+      expect([0, 1, 2, 9, 6, 7, 3].map((e) => tokens.tpFromTermIdx(e)), [
+        1.0,
+        0.9,
+        0.81,
+        0.3874204890000001,
+        0.531441,
+        0.4782969000000001,
+        0.7290000000000001
+      ]);
+
       expect(Tokens().map('This is a dog named, Banjo.', false, true),
           equals(['this', 'is', 'a', 'dog', 'named,', 'banjo.']));
       expect(Tokens().map('This is a dog named, Banjo.', true, true),
