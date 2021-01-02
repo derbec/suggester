@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/mini.css/3.0.1/mini-default.min.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8" />
+  <title>Suggester Test</title>
+  <script defer src="main.dart.js"></script>
+</head>
+
+<body>
+  <header>
+    <h1>Suggester Test</h1>
+  </header>
+  <div class="container">
+    <div class="row">
+      <div class="col-sm-12">
+        <div class="row">
+          <div class="col-sm-12">
+            <h2>Select Dataset, Options and click Load</h2>
+            <div id="loading" class="spinner primary"></div>
+          </div>
+        </div>
+        <form id="search_form" class="hidden">
+          <div class="row">
+            <h3>Test your parameter choices</h3>
+          </div>
+          <div class="row">
+            <div id="autocomplete_email" class="col-sm-12">
+              <div class="input-group fluid">
+                <input id="input_email" type="input" value="" id="mail" placeholder="Start typing..." autocomplete="off"
+                  disabled style="font-size:150%;">
+                <button type="reset" id="clear" class="primary">Clear</button>
+              </div>
+            </div>
+          </div>
+        </form>
+        <form>
+          <div class="row">
+            <div class="col-sm-12">
+              <fieldset>
+                <legend>Dataset</legend>
+                <em>Select a dataset to test.</em>
+                <div class="input-group fluid">
+                  <label for="dataset">Dataset:</label>
+                  <select id="dataset" name="dataset">
+                    <option value="email">Emails</option>
+                    <option value="address">Addresses</option>
+                  </select>
+                </div>
+                <div>
+                  <button type="button" id="load_emails" class="tertiary">Load</button>
+                  <progress id="insert_progress_email" class="tertiary inline" value="0"></progress>
+                  <div id="stats_email1"></div>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-sm-12">
+              <fieldset>
+                <legend>Case Sensitivity</legend>
+                <em>Case sensitivity of search.</em>
+                <div class="input-group fluid">
+                  <input type="radio" id="case_sensitive" name="case_sensitivity">
+                  <label for="case_sensitive">Sensitive</label>
+                  <input type="radio" id="case_insensitive" name="case_sensitivity">
+                  <label for="case_insensitive">Insensitive</label>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-sm-12">
+              <fieldset>
+                <legend>Term Decay and Mapping</legend>
+                <em>
+                  A suggestion is a sequence of terms with a specific ordering.
+                  Term decay determines how important this ordering is to result weighting.
+                  A high decay will emphasise proximal terms over distal terms.
+                  A low decay will place less empahsis on term ordering.
+                </em>
+                <div class="input-group fluid">
+                  <label for="term_decay">Term Decay:</label>
+                  <select id="term_decay" name="term_decay">
+                    <option value="0.1">0.1</option>
+                    <option value="0.2">0.2</option>
+                    <option value="0.3">0.3</option>
+                    <option value="0.4">0.4</option>
+                    <option value="0.5">0.5</option>
+                    <option value="0.6">0.6</option>
+                    <option value="0.7">0.7</option>
+                    <option value="0.8">0.8</option>
+                    <option value="0.9">0.9</option>
+                  </select>
+                </div>
+                <em>
+                  Term mappings describe how suggestion and search text is transformed prior to processing.
+                  Choice of mapping affects search characteristics and memory usage.
+                </em>
+                <div class="input-group fluid">
+                  <input type="radio" id="tokens" name="term_mapping">
+                  <label for="tokens">Tokens</label>
+                  <input type="radio" id="alpha" name="term_mapping">
+                  <label for="alpha">Alpha</label>
+                  <input type="radio" id="alpha_and_numeric" name="term_mapping">
+                  <label for="alpha_and_numeric">AlphaAndNumeric</label>
+                  <input type="radio" id="alpha_or_numeric" name="term_mapping">
+                  <label for="alpha_or_numeric">AlphaOrNumeric</label>
+                  <input type="radio" id="bigram" name="term_mapping">
+                  <label for="bigram">Bigram</label>
+                  <input type="radio" id="trigram" name="term_mapping">
+                  <label for="trigram">Trigram</label><br />
+                </div>
+                <fieldset>
+                  <legend>Current Search Input Mapping Result</legend>
+                  <em>The terms generated by the selected Term Mapping over the current search input
+                    and their corresponding proximality.
+                  </em>
+                  <div id="current_search_terms"></div>
+                </fieldset>
+              </fieldset>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-sm-12">
+              <fieldset>
+                <legend>Term Edit Distance</legend>
+                <em>
+                  Hamming distance used when searching for individual terms.
+                  *Increasing distance may cause growth in processing time.
+                </em>
+                <div class="input-group fluid">
+                  <label for="edit_distance">Term Edit Distance:</label>
+                  <select id="edit_distance" name="edit_distance">
+                    <option value="0">0</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                  </select>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-sm-12">
+              <fieldset>
+                <legend>Secondary Value</legend>
+                <em>The secondary value allows priority ordering of suggestions with same score. For example setting this to timestamp ensures that the latest accepted suggestion is given higher priority.</em>
+                <div class="input-group fluid">
+                  <input type="radio" id="secondary_timestamp" name="second_order">
+                  <label for="secondary_timestamp">Timestamp</label>
+                  <input type="radio" id="secondary_default" name="second_order">
+                  <label for="secondary_default">Default</label>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col-sm-12">
+              <fieldset>
+                <legend>Stats</legend>
+                <div class="row">
+                  <div class="col-sm-12 col-md-4">
+                    <span id="stats_email2">Memory</span>
+                  </div>
+                  <div class="col-sm-12 col-md-4">
+                    <span id="stats_email3">Ratio</span>
+                  </div>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</body>
+
+</html>
