@@ -252,7 +252,7 @@ void main() {
       suggester.addAll(emails);
     });
 
-    test('markKeys', () {
+    test('mapTermsAndNonTerms', () {
       var suggester = Suggester(Alpha());
       suggester.add('Derek_Barton@jarvis.com');
 
@@ -260,7 +260,7 @@ void main() {
 
       var suggestion = suggester.suggestFromTerms(terms).first;
 
-      var markedTerms = suggestion.mapByTerms<String>(
+      var markedTerms = suggestion.mapTermsAndNonTerms<String>(
           (final term) => '<strong>' + term + '</strong>',
           (final term) => term);
 
@@ -282,7 +282,7 @@ void main() {
 
       suggestion = suggester.suggestFromTerms(terms).first;
 
-      markedTerms = suggestion.mapByTerms<String>(
+      markedTerms = suggestion.mapTermsAndNonTerms<String>(
           (final term) => '<strong>' + term + '</strong>',
           (final term) => term);
 

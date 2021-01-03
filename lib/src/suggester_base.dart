@@ -1,3 +1,5 @@
+library suggester;
+
 import 'dart:collection';
 import 'dart:math';
 import 'package:collection/collection.dart';
@@ -10,7 +12,10 @@ const _JSONKEY_CASESENSITIVE = 'c';
 const _JSONKEY_ENTRY_VALUE = 0;
 const _JSONKEY_ENTRY_SECONDARY = 1;
 
-/// Maps from an entry to a sequence of terms.
+/// (2^53)-1 because javascript
+const int _MAX_SAFE_INTEGER = 9007199254740991;
+
+/// Maps from a String to a sequence of terms.
 ///
 /// <i>f</i> :  <i>S</i> &twoheadrightarrow; <i>S</i><sup>&#8469;</sup>
 ///
@@ -22,6 +27,30 @@ const _JSONKEY_ENTRY_SECONDARY = 1;
 ///
 /// The sequence of terms is pairwise distinct, i.e. a term can occur only once
 /// in the returned sequence.
+///
+/// Suggester works by tokenising both suggestions and input using a Term Mapping
+/// and finding partial matches between them via prefix searching.
+///
+/// For example a TermMapping that groups inputs and suggestions into sequences of
+/// letters and numbers:
+///
+/// ```dart
+/// print(AlphaOrNumeric().map('Armani.Klein3@veda.io', false, false));
+/// ```
+/// ```shell
+/// {armani, klein, 3, veda, io}
+/// ```
+///
+/// TermMapping that groups inputs and suggestions into [NGrams](https://en.wikipedia.org/wiki/N-gram)
+/// of size 3, i.e. trigrams.
+///
+/// ```dart
+/// print(Ngrams(3).map('Armani.Klein3@veda.io', false, false));
+/// ```
+///
+///```shell
+/// {arm, rma, man, ani, ni., i.k, .kl, kle, lei, ein, in3, n3@, 3@v, @ve, ved, eda, da., a.i, .io}
+/// ```
 abstract class TermMapping {
   /// Construct [TermMapping] with specified [map] function.
   ///
@@ -85,7 +114,7 @@ abstract class TermMapping {
   }
 }
 
-/// Equality over [Suggester] instances.
+/// Equality and hashing over [Suggester] instances.
 class SuggesterEquality implements Equality<Suggester> {
   final _hasher = ListEquality<dynamic>();
   @override
@@ -104,7 +133,7 @@ class SuggesterEquality implements Equality<Suggester> {
         return false;
       }
       if (e2Entry.value != e1Entry.value ||
-          e2Entry.secondaryValue != e1Entry.secondaryValue) {
+          e2Entry.subScore != e1Entry.subScore) {
         return false;
       }
     }
@@ -119,25 +148,200 @@ class SuggesterEquality implements Equality<Suggester> {
   bool isValidKey(Object? o) => o is Suggester;
 }
 
-/// Represents a single suggestion
+/// Iterate over search result ordering of [Suggestion] instances.
+/// The underlying [Suggester] can change between calls to [iterator].
+class _SuggestionIterable extends IterableBase<Suggestion> {
+  _SuggestionIterable._(this.suggester, this.searchTerms, this.maxEditDistance);
+
+  /// The [Suggester] being iterated
+  final Suggester suggester;
+
+  final int maxEditDistance;
+
+  final Iterable<String> searchTerms;
+
+  @override
+  Iterator<Suggestion> get iterator =>
+      searchTerms.isEmpty || suggester.entries.isEmpty
+          ? Iterable<Suggestion>.empty().iterator
+          : _SugggestionIterator._(this);
+}
+
+/// Iterator for [Suggestion] instances
+/// Returns suggestions grouped by edit distance
+class _SugggestionIterator implements Iterator<Suggestion> {
+  _SugggestionIterator._(this.ownerIterable)
+      : validVersion = ownerIterable.suggester._version,
+        currentItr = Iterable<Suggestion>.empty().iterator,
+        // Set up prefix matching for search terms
+        termEntriesItrs = {
+          for (final searchTerm in ownerIterable.searchTerms)
+            searchTerm: ownerIterable.suggester._ttMultiMap
+                .valuesByKeyPrefix(searchTerm,
+                    maxPrefixEditDistance: ownerIterable.maxEditDistance)
+                .iterator
+        };
+
+  /// [Suggester._version] at start of iteration
+  final int validVersion;
+
+  /// The [Suggester] being iterated
+  final _SuggestionIterable ownerIterable;
+
+  /// Keep track of prefix searching for each search term
+  final Map<String, TTIterator<_EntryTermIdx>> termEntriesItrs;
+
+  Iterator<Suggestion> currentItr;
+
+  /// Set to -1 so that first increment is 0
+  int termEditDistance = -1;
+
+  @override
+  Suggestion get current => currentItr.current;
+
+  @override
+  bool moveNext() {
+    if (ownerIterable.suggester._version != validVersion) {
+      throw ConcurrentModificationError();
+    }
+
+    // First try to advance along current iterator
+    if (currentItr.moveNext()) {
+      return true;
+    }
+
+    // Move to next term edit distance results
+    termEditDistance++;
+
+    // Have we passed the client specified max distance?
+    if (termEditDistance > ownerIterable.maxEditDistance) {
+      return false;
+    }
+
+    // set up for next set of edit distance results
+    final entryWeights = HashMap<Entry, double>();
+
+    var termIdx = 0;
+    for (final searchTerm in ownerIterable.searchTerms) {
+      final tpTerm = ownerIterable.suggester.termMapping.tpFromTermIdx(termIdx);
+      final termEntries = termEntriesItrs[searchTerm]!;
+
+      // Partial term matching allows entries to occur more than once
+      // for a particular search term e.g:
+      // 'de' may return {'dead', 'detol'}.
+      // The suggestion 'Drinking detol makes you dead' may be returned twice.
+      // In this case we need only the occurence with the highest term proximity,
+      // in this case 'detol'.
+      // Suggestions from terms with a lower edit distance are prioritised
+      // over those with a higher edit distance.
+      final uniqueTermEntries = <Entry, _TermDistanceEntry>{};
+
+      // The previous call advances to the first element of the next edit distance
+      // so need to consume this first before calling moveNext this time round.
+      var processCurrentValueFirst = termEntries.hasCurrentValue &&
+          termEntries.prefixEditDistance == termEditDistance;
+
+      while (processCurrentValueFirst ||
+          (termEntries.moveNext() &&
+              termEntries.prefixEditDistance <= termEditDistance)) {
+        processCurrentValueFirst = false;
+        final termEntry = termEntries.current;
+        final currentBest = uniqueTermEntries[termEntry.entry];
+
+        if (identical(currentBest, null)) {
+          uniqueTermEntries[termEntry.entry] =
+              _TermDistanceEntry(termEntries.prefixEditDistance, termEntry);
+        } else if (termEntries.prefixEditDistance <= currentBest.termDistance &&
+            termEntry.termIdx < currentBest.entryTermIdx.termIdx) {
+          uniqueTermEntries.remove(termEntry.entry);
+          uniqueTermEntries[termEntry.entry] =
+              _TermDistanceEntry(termEntries.prefixEditDistance, termEntry);
+        }
+      }
+
+      // scale by the discriminating power of these partial term matches
+      final idf = 1 +
+          log(ownerIterable.suggester.entries.length /
+              uniqueTermEntries.length);
+      for (final entryDistance in uniqueTermEntries.values) {
+        final termEntry = entryDistance.entryTermIdx;
+        // Longer search terms carry more weight than shorter search terms.
+        // Reduce by distance and compare to longest known term.
+        final termLengthWeight =
+            (searchTerm.length - entryDistance.termDistance);
+
+        final weightUpdate = tpTerm *
+            ownerIterable.suggester.termMapping
+                .tpFromTermIdx(termEntry.termIdx) *
+            termLengthWeight *
+            idf;
+
+        final currentWeight = entryWeights[termEntry.entry];
+
+        if (identical(currentWeight, null)) {
+          entryWeights[termEntry.entry] = weightUpdate;
+        } else {
+          entryWeights[termEntry.entry] = currentWeight + weightUpdate;
+        }
+      }
+
+      termIdx++;
+    }
+
+    final sorted = entryWeights.entries.toList()
+      ..sort((final e1, final e2) {
+        // Sort first by total weight descending
+        var diff = e2.value.compareTo(e1.value);
+
+        // Then by last accepted timestamp descending
+        if (diff == 0) {
+          diff = e2.key.subScore.compareTo(e1.key.subScore);
+        }
+
+        // Then by suggestion string value ascending
+        if (diff == 0) {
+          diff = e1.key.value.compareTo(e2.key.value);
+        }
+
+        return diff;
+      });
+
+    currentItr = sorted
+        .map((final mapEntry) => Suggestion._(
+            entry: mapEntry.key,
+            score: mapEntry.value,
+            searchTerms: ownerIterable.searchTerms,
+            caseSensitive: ownerIterable.suggester.caseSensitive,
+            prefixEditDistance: termEditDistance))
+        .iterator;
+
+    if (currentItr.moveNext()) {
+      return true;
+    }
+
+    // Recursively move to next edit distance
+    // Note: This will only go 1 deep worst case
+    return moveNext();
+  }
+}
+
+/// Represents a single match result
 class Suggestion {
   /// Construct a [Suggestion].
   Suggestion._(
       {required this.entry,
+      required this.score,
       required this.searchTerms,
-      required this.caseSensitive}) {
+      required this.caseSensitive,
+      required this.prefixEditDistance}) {
     ArgumentError.checkNotNull(entry);
   }
 
-  /// Construct a [Suggestion] from [entry]
-  Suggestion.fromEntry(Entry entry)
-      : this._(
-            entry: entry,
-            searchTerms: Iterable<String>.empty(),
-            caseSensitive: false);
-
   /// [Entry] referenced by this [Suggestion].
   final Entry entry;
+
+  /// Recommendation score for this suggestion
+  final double score;
 
   /// The terms that led to this suggestion
   final Iterable<String> searchTerms;
@@ -145,8 +349,12 @@ class Suggestion {
   /// True if search was case sensitive, false otherwise.
   final bool caseSensitive;
 
+  /// The prefix edit distance leading to this suggestion
+  final int prefixEditDistance;
+
   /// Split [entry] by first occurance of each term in [searchTerms].
-  Iterable<T> mapByTerms<T>(
+  /// [mapTerm] and [mapNonTerm] may return any object including string.
+  Iterable<T> mapTermsAndNonTerms<T>(
       T Function(String term) mapTerm, T Function(String nonTerm) mapNonTerm) {
     if (searchTerms.isEmpty) {
       return [mapNonTerm(entry.value)];
@@ -226,6 +434,10 @@ class Suggestion {
     }
     return result;
   }
+
+  @override
+  String toString() =>
+      '{entry: ${entry.toString()}, score: $score, searchTerms: $searchTerms,caseSensitive: $caseSensitive,prefixEditDistance: $prefixEditDistance}';
 }
 
 /// Represents a single value to be returned as a suggestion.
@@ -234,7 +446,7 @@ class Entry {
   /// Throws exception if [value] is null or empty.
   Entry._(String value, {int? secondaryValue})
       : value = value,
-        _secondaryValue = secondaryValue ?? 0 {
+        _subScore = secondaryValue ?? 0 {
     ArgumentError.checkNotNull(value);
     if (value.isEmpty) {
       throw ArgumentError('value.isEmpty');
@@ -250,21 +462,21 @@ class Entry {
   /// The original suggestion string supplied by client.
   final String value;
 
-  int _secondaryValue;
+  int _subScore;
 
-  /// Allows differentiation between entries of equal weight.
-  int get secondaryValue => _secondaryValue;
+  /// An integer that allows differentiation between entries of equal weight.
+  /// By default starts at zero and increments after each [accept] but
+  /// could also be a timestamp to allow ordering by latest.
+  int get subScore => _subScore;
 
   /// Process the event that user has accepted this entry as a suggestion.
   ///
-  /// If [secondaryValue] not provided then secondary value incremented by 1
-  /// with result that more recently selected entries are given
-  /// higher priority.
-  void accept({int? secondaryValue}) {
-    _secondaryValue = secondaryValue ?? _secondaryValue + 1;
+  /// If [subScore] not provided then existing [subScore] is incremented by 1.
+  void accept({int? subScore}) {
+    _subScore = subScore ?? _subScore + 1;
   }
 
-  /// Two suggestions are equal if they have the same [value].
+  /// Two Entries are equal if they have the same [value].
   @override
   bool operator ==(final dynamic other) =>
       identical(this, other) || (other is Entry && value == other.value);
@@ -273,10 +485,10 @@ class Entry {
   int get hashCode => value.hashCode;
 
   @override
-  String toString() => value;
+  String toString() => '{value: $value, subScore: $_subScore}';
 
   /// Return json representation of entry
-  dynamic _toJson() => [value, secondaryValue];
+  dynamic _toJson() => [value, subScore];
 }
 
 /// A relation between a [Entry] and a term index.
@@ -316,7 +528,7 @@ class _TermDistanceEntry {
 
 /// Suggests text completions.
 ///
-/// Uses a modified version of "term frequency - inverse document frequency" (tf-idf)
+/// Uses a modified version of [term frequency - inverse document frequency](https://en.wikipedia.org/wiki/Tf%E2%80%93idf)
 /// weighting to allow ordering not just by relevance but by term order similarity to
 /// search sentence.
 ///
@@ -330,24 +542,12 @@ class _TermDistanceEntry {
 /// as returned by [TermMapping] such that <i>f(x)</i> = term at index x.
 ///
 /// Then tp is given by <i>g</i> : <i>K</i> &#8594; &#8469; | g(x) = 1/<i>f<sup>-1</sup>(x)</i>
-///
-/// Final weighting of term <i>t</i> for suggestion <i>s</i> is:
-/// <i>tp * log(|S|/|S<sub>t</sub>|)</i> where <i>S<sub>t</sub></i>
-/// is the subset of S mapping to t.
-///
-///
-///
-/// Operation is as follows:
-///
-/// 1. A suggestion string is mapped to a sequence of <i>n</i> String keys via [TermMapping].
-/// 1.
-/// 1. blah
-///
 class Suggester {
   Suggester._(this.termMapping, this.caseSensitive, this.unicode, this._entries,
       Iterable<Entry>? initEntries)
       : _ttMultiMap = TTMultiMapSet<_EntryTermIdx>(),
-        entries = UnmodifiableMapView(_entries) {
+        entries = UnmodifiableMapView(_entries),
+        _version = 0 {
     ArgumentError.checkNotNull(termMapping);
     ArgumentError.checkNotNull(caseSensitive);
     ArgumentError.checkNotNull(unicode);
@@ -380,7 +580,7 @@ class Suggester {
   /// Specify case sensitivity of [termMapping].
   final bool caseSensitive;
 
-  /// Specify if [termMapping] uses unicode or ascii RegExp.
+  /// True if [termMapping] uses unicode RegExp.
   /// Javascript has trouble with Unicode RegExp so set to false if
   /// running in browser.
   final bool unicode;
@@ -391,14 +591,22 @@ class Suggester {
   /// Store relation from term to entry
   final TTMultiMapSet<_EntryTermIdx> _ttMultiMap;
 
-  /// All current entries
+  /// Unmodifiable view of current entries
   final UnmodifiableMapView<String, Entry> entries;
 
   /// All current entries
   final Map<String, Entry> _entries;
 
+  /// Track version tofor detection of iterator concurrent modification
+  int _version;
+
+  /// Increment keys/structure version
+  void _incVersion() {
+    _version = (_version >= _MAX_SAFE_INTEGER) ? 1 : _version + 1;
+  }
+
   /// Add [entry] to the set of possible suggestions.
-  /// Update [entry.secondaryValue]
+  /// Update [entry.subScore]
   ///
   /// If [entry] is null or empty then throws [ArgumentError].
   ///
@@ -429,29 +637,48 @@ class Suggester {
       termIdx++;
     }
 
+    _incVersion();
+
     return true;
   }
 
-  /// Add [entryTitle] to the set of possible suggestions.
-  /// Update [entryTitle.secondaryValue]
+  /// Return an iterable over all entries ordered by:
+  /// 1) subscore
+  /// 2) lexicographically
+  Iterable<Entry> entriesBySubScore() => entries.values.toList()
+    ..sort((final e1, final e2) {
+      // Sort first by subScore descending
+      var diff = e2._subScore.compareTo(e1._subScore);
+
+      // Then by suggestion string value ascending
+      if (diff == 0) {
+        diff = e1.value.compareTo(e2.value);
+      }
+
+      return diff;
+    });
+
+  /// Add [entryValue] to the set of possible suggestions.
   ///
-  /// If [entryTitle] is null or empty then throws [ArgumentError].
+  /// Optionally update [Entry.subScore] at same time.
   ///
-  /// If [entryTitle] cannot be mapped to at least 1 key via specified [TermMapping]
+  /// If [entryValue] is null or empty then throws [ArgumentError].
+  ///
+  /// If [entryValue] cannot be mapped to at least 1 key via specified [TermMapping]
   /// then it is not added and return value is false.
   ///
-  /// If [entryTitle] is successfully added or already exists then return value is true.
-  bool add(String entryTitle, {int? secondaryValue}) {
-    final entry = _entries[entryTitle];
+  /// If [entryValue] is successfully added or already exists then return value is true.
+  bool add(String entryValue, {int? subScore}) {
+    final entry = _entries[entryValue];
     if (!identical(entry, null)) {
       // we already know this suggestion so just update its secondary value
-      if (!identical(secondaryValue, null)) {
-        entry._secondaryValue = secondaryValue;
+      if (!identical(subScore, null)) {
+        entry._subScore = subScore;
       }
       return true;
     }
 
-    return _addEntry(Entry._(entryTitle, secondaryValue: secondaryValue));
+    return _addEntry(Entry._(entryValue, secondaryValue: subScore));
   }
 
   /// Equivilent to [add] for all [entries].
@@ -464,7 +691,7 @@ class Suggester {
         }
       });
 
-  /// Use supplied [TermMapping] to map [entry] to a pairwise
+  /// Use suggester [TermMapping] to map [entry] to a pairwise
   /// distinct sequence of terms.
   Iterable<String> mapTerms(String entry) {
     ArgumentError.checkNotNull(entry, 'suggestion');
@@ -493,7 +720,9 @@ class Suggester {
     return entryStringBytes + _ttMultiMap.sizeOf(SIZE_OF_INT);
   }
 
-  /// Return list of [Suggestion] based upon [searchString].
+  /// Return [Iterable] of [Suggestion] based upon [searchString].
+  ///
+  /// [Suggester.termMapping] is applied to [searchString] prior to search.
   ///
   /// see: [suggestFromTerms] for details of operation.
   Iterable<Suggestion> suggest(String searchString,
@@ -501,7 +730,7 @@ class Suggester {
       suggestFromTerms(mapTerms(searchString),
           maxEditDistance: maxEditDistance);
 
-  /// Return list of [Suggestion] based upon [searchTerms] aquired from
+  /// Return [Iterable] of [Suggestion] based upon [searchTerms] aquired from
   /// a [TermMapping].
   ///
   /// Suggestions are ordered descending by weight and then
@@ -519,105 +748,16 @@ class Suggester {
   /// The relative growth/decay rates of each function determine overall result ordering:
   ///
   /// term_proximality &#8811; edit_distance &#8811; inverse_document_frequency
+  ///
+  /// The resulting [Iterable] will throw [ConcurrentModificationError] if underlying
+  /// [Suggester] changes during iteration. Change between seperate iterations is permitted.
   Iterable<Suggestion> suggestFromTerms(Iterable<String> searchTerms,
       {int maxEditDistance = 0}) {
-    ArgumentError.checkNotNull(searchTerms, 'searchTerms');
-    ArgumentError.checkNotNull(maxEditDistance, 'maxEditDistance');
-
     if (maxEditDistance < 0) {
       throw ArgumentError.value(maxEditDistance, 'maxEditDistance < 0');
     }
 
-    if (entries.isEmpty) {
-      return Iterable<Suggestion>.empty();
-    }
-
-    if (searchTerms.isEmpty) {
-      return Iterable<Suggestion>.empty();
-    }
-
-    final entryWeights = HashMap<Entry, double>();
-
-    var termIdx = 0;
-    for (final searchTerm in searchTerms) {
-      final tpTerm = termMapping.tpFromTermIdx(termIdx);
-      final termEntries = _ttMultiMap
-          .valuesByKeyPrefix(searchTerm, maxPrefixEditDistance: maxEditDistance)
-          .iterator;
-
-      // Partial term matching allows entries to occur more than once
-      // for a particular search term e.g:
-      // 'de' may return {'dead', 'detol'}.
-      // The suggestion 'Drinking detol makes you dead' may be returned twice.
-      // In this case we need only the occurence with the highest term proximity,
-      // in this case 'detol'.
-      // Suggestions from terms with a lower edit distance are prioritised
-      // over those with a higher edit distance.
-      final uniqueTermEntries = <Entry, _TermDistanceEntry>{};
-
-      while (termEntries.moveNext()) {
-        final termEntry = termEntries.current;
-        final currentBest = uniqueTermEntries[termEntry.entry];
-
-        if (identical(currentBest, null)) {
-          uniqueTermEntries[termEntry.entry] =
-              _TermDistanceEntry(termEntries.prefixEditDistance, termEntry);
-        } else if (termEntries.prefixEditDistance <= currentBest.termDistance &&
-            termEntry.termIdx < currentBest.entryTermIdx.termIdx) {
-          uniqueTermEntries.remove(termEntry.entry);
-          uniqueTermEntries[termEntry.entry] =
-              _TermDistanceEntry(termEntries.prefixEditDistance, termEntry);
-        }
-      }
-
-      // scale by the discriminating power of these partial term matches
-      final idf = 1 + log(entries.length / uniqueTermEntries.length);
-      for (final entryDistance in uniqueTermEntries.values) {
-        final termEntry = entryDistance.entryTermIdx;
-        // Longer search terms carry more weight than shorter search terms.
-        // Reduce by distance and compare to longest known term.
-        final termLengthWeight =
-            (searchTerm.length - entryDistance.termDistance);
-
-        final weightUpdate = tpTerm *
-            termMapping.tpFromTermIdx(termEntry.termIdx) *
-            termLengthWeight *
-            idf;
-
-        final currentWeight = entryWeights[termEntry.entry];
-
-        if (identical(currentWeight, null)) {
-          entryWeights[termEntry.entry] = weightUpdate;
-        } else {
-          entryWeights[termEntry.entry] = currentWeight + weightUpdate;
-        }
-      }
-
-      termIdx++;
-    }
-
-    final sorted = entryWeights.entries.toList()
-      ..sort((final e1, final e2) {
-        // Sort first by total weight descending
-        var diff = e2.value.compareTo(e1.value);
-
-        // Then by last accepted timestamp descending
-        if (diff == 0) {
-          diff = e2.key.secondaryValue.compareTo(e1.key.secondaryValue);
-        }
-
-        // Then by suggestion string value ascending
-        if (diff == 0) {
-          diff = e1.key.value.compareTo(e2.key.value);
-        }
-
-        return diff;
-      });
-
-    return sorted.map((final entry) => Suggestion._(
-        entry: entry.key,
-        searchTerms: searchTerms,
-        caseSensitive: caseSensitive));
+    return _SuggestionIterable._(this, searchTerms, maxEditDistance);
   }
 
   /// Return json encodable object representing this [Suggester]
