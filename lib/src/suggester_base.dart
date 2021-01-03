@@ -337,6 +337,15 @@ class Suggestion {
     ArgumentError.checkNotNull(entry);
   }
 
+  /// Construct from existing entry
+  Suggestion._fromEntry(Entry entry, bool caseSensitive)
+      : this._(
+            entry: entry,
+            score: 0,
+            searchTerms: Iterable<String>.empty(),
+            caseSensitive: caseSensitive,
+            prefixEditDistance: 0);
+
   /// [Entry] referenced by this [Suggestion].
   final Entry entry;
 
@@ -615,8 +624,6 @@ class Suggester {
   ///
   /// If [entry] is successfully added then return value is true.
   bool _addEntry(Entry entry) {
-    _entries[entry.value] = entry;
-
     // Transform term into list of distinct keys and map them to term
     final terms = mapTerms(entry.value);
 
@@ -624,6 +631,8 @@ class Suggester {
     if (terms.isEmpty) {
       return false;
     }
+
+    _entries[entry.value] = entry;
 
     var termIdx = 0;
     for (var term in terms) {
@@ -670,15 +679,14 @@ class Suggester {
   /// If [entryValue] is successfully added or already exists then return value is true.
   bool add(String entryValue, {int? subScore}) {
     final entry = _entries[entryValue];
-    if (!identical(entry, null)) {
-      // we already know this suggestion so just update its secondary value
-      if (!identical(subScore, null)) {
-        entry._subScore = subScore;
-      }
-      return true;
+    if (identical(entry, null)) {
+      return _addEntry(Entry._(entryValue, secondaryValue: subScore));
     }
-
-    return _addEntry(Entry._(entryValue, secondaryValue: subScore));
+    // we already know this suggestion so just update its secondary value
+    if (!identical(subScore, null)) {
+      entry._subScore = subScore;
+    }
+    return true;
   }
 
   /// Equivilent to [add] for all [entries].
@@ -758,6 +766,17 @@ class Suggester {
     }
 
     return _SuggestionIterable._(this, searchTerms, maxEditDistance);
+  }
+
+  /// Create suggestion directly from [entryValue].
+  ///
+  /// Return null if [entryValue] does not exist in this suggester.
+  Suggestion? createSuggestion(String entryValue) {
+    final entry = _entries[entryValue];
+    if (identical(entry, null)) {
+      return null;
+    }
+    return Suggestion._fromEntry(entry, caseSensitive);
   }
 
   /// Return json encodable object representing this [Suggester]

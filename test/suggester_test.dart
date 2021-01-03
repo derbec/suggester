@@ -330,5 +330,16 @@ void main() {
 
       expect(SuggesterEquality().equals(suggester1, suggester2), equals(false));
     });
+
+    test('createSuggestion', () {
+      final suggester1 = Suggester(Alpha());
+      suggester1.add('Banjo_Barton@hotmail.com');
+      suggester1.add('Tilly_Smith@jarvis.com');
+      suggester1.add('Derek_Barton@jarvis.com');
+      suggester1.add('Tilly_Smith@jarvis.com');
+
+      final test = suggester1.createSuggestion('Tilly_Smith@jarvis.com');
+      expect(test?.entry.value, 'Tilly_Smith@jarvis.com');
+    });
   });
 }
