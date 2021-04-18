@@ -6,3 +6,6 @@
 
 - Added createSuggestion method
 
+## 0.9.2
+
+- Updated dependancies. createSuggestion() now throws ArgumentError.

@@ -339,7 +339,11 @@ void main() {
       suggester1.add('Tilly_Smith@jarvis.com');
 
       final test = suggester1.createSuggestion('Tilly_Smith@jarvis.com');
-      expect(test?.entry.value, 'Tilly_Smith@jarvis.com');
+      expect(test.entry.value, 'Tilly_Smith@jarvis.com');
+
+      // Throw exception if unknown
+      expect(() => suggester1.createSuggestion('Tilly_Smith@unkown.com'),
+          throwsArgumentError);
     });
   });
 }

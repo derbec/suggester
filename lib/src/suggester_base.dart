@@ -770,11 +770,12 @@ class Suggester {
 
   /// Create suggestion directly from [entryValue].
   ///
-  /// Return null if [entryValue] does not exist in this suggester.
-  Suggestion? createSuggestion(String entryValue) {
+  /// Throw [ArgumentError] if [entryValue] does not exist in this suggester.
+  Suggestion createSuggestion(String entryValue) {
     final entry = _entries[entryValue];
     if (identical(entry, null)) {
-      return null;
+      throw ArgumentError.value(
+          entryValue, 'entryValue', 'Value not known to Suggester');
     }
     return Suggestion._fromEntry(entry, caseSensitive);
   }
