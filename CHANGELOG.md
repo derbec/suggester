@@ -9,3 +9,7 @@
 ## 0.9.2
 
 - Updated dependancies. createSuggestion() now throws ArgumentError.
+
+## 0.9.3
+
+- Downgraded dependancies. Pub dev does not recognise latest.
