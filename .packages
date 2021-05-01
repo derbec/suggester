@@ -28,7 +28,6 @@ glob:packages/glob/
 graphs:packages/graphs/
 http_multi_server:packages/http_multi_server/
 http_parser:packages/http_parser/
-intl:packages/intl/
 io:packages/io/
 js:packages/js/
 json_annotation:packages/json_annotation/
@@ -36,8 +35,6 @@ logging:packages/logging/
 matcher:packages/matcher/
 meta:packages/meta/
 mime:packages/mime/
-node_interop:packages/node_interop/
-node_io:packages/node_io/
 package_config:packages/package_config/
 path:packages/path/
 pedantic:packages/pedantic/
@@ -45,7 +42,6 @@ pool:packages/pool/
 protobuf:packages/protobuf/
 pub_semver:packages/pub_semver/
 pubspec_parse:packages/pubspec_parse/
-quiver:packages/quiver/
 scratch_space:packages/scratch_space/
 shelf:packages/shelf/
 shelf_web_socket:packages/shelf_web_socket/
