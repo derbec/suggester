@@ -1,6 +1,6 @@
 name: suggester
 description: Autocompletion engine with highly configurable partial matching. Suitable for web or mobile.
-version: 0.9.3
+version: 0.9.4
 homepage: https://github.com/derbec/suggester
 
 environment:

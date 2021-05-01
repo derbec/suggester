@@ -180,7 +180,8 @@ class _SugggestionIterator implements Iterator<Suggestion> {
                 .valuesByKeyPrefix(searchTerm,
                     maxPrefixEditDistance: ownerIterable.maxEditDistance)
                 .iterator
-        };
+        },
+        entryTermIdxSequence = <Entry, _TermIdxSequence>{};
 
   /// [Suggester._version] at start of iteration
   final int validVersion;
@@ -190,6 +191,11 @@ class _SugggestionIterator implements Iterator<Suggestion> {
 
   /// Keep track of prefix searching for each search term
   final Map<String, TTIterator<_EntryTermIdx>> termEntriesItrs;
+
+  /// Keep track of last known termIdx sequence for each entry to allow identification
+  /// of shared sequential runs of search terms in entries.
+  /// Shared sequences between search terms and entries increases similarity.
+  final Map<Entry, _TermIdxSequence> entryTermIdxSequence;
 
   Iterator<Suggestion> currentItr;
 
@@ -201,7 +207,9 @@ class _SugggestionIterator implements Iterator<Suggestion> {
 
   @override
   bool moveNext() {
-    if (ownerIterable.suggester._version != validVersion) {
+    final suggester = ownerIterable.suggester;
+
+    if (suggester._version != validVersion) {
       throw ConcurrentModificationError();
     }
 
@@ -221,9 +229,8 @@ class _SugggestionIterator implements Iterator<Suggestion> {
     // set up for next set of edit distance results
     final entryWeights = HashMap<Entry, double>();
 
-    var termIdx = 0;
+    var searchTermIdx = 0;
     for (final searchTerm in ownerIterable.searchTerms) {
-      final tpTerm = ownerIterable.suggester.termMapping.tpFromTermIdx(termIdx);
       final termEntries = termEntriesItrs[searchTerm]!;
 
       // Partial term matching allows entries to occur more than once
@@ -253,28 +260,44 @@ class _SugggestionIterator implements Iterator<Suggestion> {
               _TermDistanceEntry(termEntries.prefixEditDistance, termEntry);
         } else if (termEntries.prefixEditDistance <= currentBest.termDistance &&
             termEntry.termIdx < currentBest.entryTermIdx.termIdx) {
-          uniqueTermEntries.remove(termEntry.entry);
           uniqueTermEntries[termEntry.entry] =
               _TermDistanceEntry(termEntries.prefixEditDistance, termEntry);
         }
       }
 
-      // scale by the discriminating power of these partial term matches
-      final idf = 1 +
-          log(ownerIterable.suggester.entries.length /
-              uniqueTermEntries.length);
+      // Calculate inverse document frequency of current term within all entries.
+      final idf = 1 + log(suggester.entries.length / uniqueTermEntries.length);
       for (final entryDistance in uniqueTermEntries.values) {
         final termEntry = entryDistance.entryTermIdx;
-        // Longer search terms carry more weight than shorter search terms.
-        // Reduce by distance and compare to longest known term.
-        final termLengthWeight =
-            (searchTerm.length - entryDistance.termDistance);
 
-        final weightUpdate = tpTerm *
-            ownerIterable.suggester.termMapping
-                .tpFromTermIdx(termEntry.termIdx) *
-            termLengthWeight *
-            idf;
+        // Update term sequences shared between search terms and entry
+        final sharedTermIdxSequence = entryTermIdxSequence.putIfAbsent(
+            termEntry.entry, () => _TermIdxSequence(0, 0));
+
+        var termEntryIdx = termEntry.termIdx;
+
+        // Can we extend an existing sequence?
+        if (termEntryIdx - 1 == sharedTermIdxSequence.termIdxEnd) {
+          sharedTermIdxSequence.termIdxEnd = termEntryIdx;
+        } else {
+          sharedTermIdxSequence.termIdxStart = termEntryIdx;
+          sharedTermIdxSequence.termIdxEnd = termEntryIdx;
+        }
+
+        // calculate weight contribution of this search term for entry
+        final weightUpdate =
+            // Term proximality for current search term
+            (suggester.termMapping.tpFromTermIdx(searchTermIdx) *
+                    // Term proximality for start of current shared sequence
+                    suggester.termMapping
+                        .tpFromTermIdx(sharedTermIdxSequence.termIdxStart) *
+                    suggester.termProximalityWeighting) +
+                // Favour entries that share higher term sequence similarity with
+                // search sentance
+                ((sharedTermIdxSequence.sequenceLength /
+                        ownerIterable.searchTerms.length) *
+                    suggester.sharedSequenceLengthWeighting) +
+                (idf * suggester.termIdfWeighting);
 
         final currentWeight = entryWeights[termEntry.entry];
 
@@ -285,7 +308,7 @@ class _SugggestionIterator implements Iterator<Suggestion> {
         }
       }
 
-      termIdx++;
+      searchTermIdx++;
     }
 
     final sorted = entryWeights.entries.toList()
@@ -311,7 +334,7 @@ class _SugggestionIterator implements Iterator<Suggestion> {
             entry: mapEntry.key,
             score: mapEntry.value,
             searchTerms: ownerIterable.searchTerms,
-            caseSensitive: ownerIterable.suggester.caseSensitive,
+            caseSensitive: suggester.caseSensitive,
             prefixEditDistance: termEditDistance))
         .iterator;
 
@@ -333,9 +356,7 @@ class Suggestion {
       required this.score,
       required this.searchTerms,
       required this.caseSensitive,
-      required this.prefixEditDistance}) {
-    ArgumentError.checkNotNull(entry);
-  }
+      required this.prefixEditDistance});
 
   /// Construct from existing entry
   Suggestion._fromEntry(Entry entry, bool caseSensitive)
@@ -456,9 +477,8 @@ class Entry {
   Entry._(String value, {int? secondaryValue})
       : value = value,
         _subScore = secondaryValue ?? 0 {
-    ArgumentError.checkNotNull(value);
     if (value.isEmpty) {
-      throw ArgumentError('value.isEmpty');
+      throw ArgumentError('value is empty');
     }
   }
 
@@ -527,12 +547,21 @@ class _EntryTermIdx {
 
 @immutable
 class _TermDistanceEntry {
-  _TermDistanceEntry(this.termDistance, this.entryTermIdx)
-      : assert(!identical(termDistance, null)),
-        assert(!identical(entryTermIdx, null));
+  _TermDistanceEntry(this.termDistance, this.entryTermIdx);
 
   final int termDistance;
   final _EntryTermIdx entryTermIdx;
+}
+
+/// Keep track of term index sequences shared between search sentance and entry
+class _TermIdxSequence {
+  _TermIdxSequence(this.termIdxStart, this.termIdxEnd);
+
+  int termIdxStart;
+  int termIdxEnd;
+
+  /// Length of current sequence
+  int get sequenceLength => termIdxEnd - termIdxStart + 1;
 }
 
 /// Suggests text completions.
@@ -552,15 +581,18 @@ class _TermDistanceEntry {
 ///
 /// Then tp is given by <i>g</i> : <i>K</i> &#8594; &#8469; | g(x) = 1/<i>f<sup>-1</sup>(x)</i>
 class Suggester {
-  Suggester._(this.termMapping, this.caseSensitive, this.unicode, this._entries,
+  Suggester._(
+      this.termMapping,
+      this.caseSensitive,
+      this.unicode,
+      this.termIdfWeighting,
+      this.termProximalityWeighting,
+      this.sharedSequenceLengthWeighting,
+      this._entries,
       Iterable<Entry>? initEntries)
       : _ttMultiMap = TTMultiMapSet<_EntryTermIdx>(),
         entries = UnmodifiableMapView(_entries),
         _version = 0 {
-    ArgumentError.checkNotNull(termMapping);
-    ArgumentError.checkNotNull(caseSensitive);
-    ArgumentError.checkNotNull(unicode);
-
     if (!identical(initEntries, null)) {
       for (final suggestion in initEntries) {
         _addEntry(suggestion);
@@ -570,12 +602,27 @@ class Suggester {
 
   /// Construct a new [Suggester]
   Suggester(TermMapping termMapping,
-      {bool caseSensitive = false, bool unicode = true})
-      : this._(termMapping, caseSensitive, unicode, <String, Entry>{}, null);
+      {bool caseSensitive = false,
+      bool unicode = true,
+      double termIdfWeighting = 1,
+      double termProximalityWeighting = 1,
+      double sharedSequenceLengthWeighting = 1})
+      : this._(
+            termMapping,
+            caseSensitive,
+            unicode,
+            termIdfWeighting,
+            termProximalityWeighting,
+            sharedSequenceLengthWeighting,
+            <String, Entry>{},
+            null);
 
   /// Construct a new [Suggester] from [json].
   Suggester.fromJson(TermMapping termMapping, dynamic json,
-      {bool unicode = true})
+      {bool unicode = true,
+      double termIdfWeighting = 1,
+      double termProximalityWeighting = 1,
+      double sharedSequenceLengthWeighting = 1})
       : this._(
             termMapping.runtimeType.toString() == json[_JSONKEY_TERMMAPPING]
                 ? termMapping
@@ -583,6 +630,9 @@ class Suggester {
                     'Expected termMapping:${termMapping.runtimeType.toString()}, got termMapping:${json[_JSONKEY_TERMMAPPING]}'),
             json[_JSONKEY_CASESENSITIVE] as bool,
             unicode,
+            termIdfWeighting,
+            termProximalityWeighting,
+            sharedSequenceLengthWeighting,
             <String, Entry>{},
             (json[_JSONKEY_ENTRIES] as List).map((e) => Entry._fromJson(e)));
 
@@ -594,10 +644,25 @@ class Suggester {
   /// running in browser.
   final bool unicode;
 
+  /// Term idf contribution to term weighting
+  ///
+  /// see: [suggestFromTerms]
+  final double termIdfWeighting;
+
+  /// Term proximality contribution to term weighting.
+  ///
+  /// see: [suggestFromTerms]
+  final double termProximalityWeighting;
+
+  /// Shared sequence length contribution to term weighting
+  ///
+  /// see: [suggestFromTerms]
+  final double sharedSequenceLengthWeighting;
+
   /// The [TermMapping] used to convert an entry to a list of terms.
   final TermMapping termMapping;
 
-  /// Store relation from term to entry
+  /// Store prefix searchable relation from term to entry
   final TTMultiMapSet<_EntryTermIdx> _ttMultiMap;
 
   /// Unmodifiable view of current entries
@@ -616,8 +681,6 @@ class Suggester {
 
   /// Add [entry] to the set of possible suggestions.
   /// Update [entry.subScore]
-  ///
-  /// If [entry] is null or empty then throws [ArgumentError].
   ///
   /// If [entry] cannot be mapped to at least 1 key via specified [TermMapping]
   /// then it is not added and return value is false.
@@ -671,8 +734,6 @@ class Suggester {
   ///
   /// Optionally update [Entry.subScore] at same time.
   ///
-  /// If [entryValue] is null or empty then throws [ArgumentError].
-  ///
   /// If [entryValue] cannot be mapped to at least 1 key via specified [TermMapping]
   /// then it is not added and return value is false.
   ///
@@ -701,13 +762,20 @@ class Suggester {
 
   /// Use suggester [TermMapping] to map [entry] to a pairwise
   /// distinct sequence of terms.
-  Iterable<String> mapTerms(String entry) {
-    ArgumentError.checkNotNull(entry, 'suggestion');
+  /// If [fallBackToSearchString] is true then [entry] is returned as single
+  /// token if [termMapping] generates no tokens
+  Iterable<String> mapTerms(String entry,
+      {bool fallBackToSearchString = false}) {
+    entry = entry.trim();
     if (entry.isEmpty) {
       return Iterable<String>.empty();
     }
 
     final terms = termMapping.map(entry, caseSensitive, unicode);
+
+    if (fallBackToSearchString && terms.isEmpty) {
+      return [caseSensitive ? entry : entry.toLowerCase()];
+    }
 
     return terms;
   }
@@ -735,7 +803,7 @@ class Suggester {
   /// see: [suggestFromTerms] for details of operation.
   Iterable<Suggestion> suggest(String searchString,
           {int maxEditDistance = 0}) =>
-      suggestFromTerms(mapTerms(searchString),
+      suggestFromTerms(mapTerms(searchString, fallBackToSearchString: true),
           maxEditDistance: maxEditDistance);
 
   /// Return [Iterable] of [Suggestion] based upon [searchTerms] aquired from
@@ -745,17 +813,11 @@ class Suggester {
   /// lexicographically ascending by suggestion.
   ///
   /// [Entry] weight is summation of the products of the following
-  /// fuctions for each search term and matched suggestion term.
+  /// fuctions and client specified weighting factors.
   ///
-  /// * term_proximality(searchTerm) - Rapid decay to emphasise proximal terms.
-  /// * term_proximality(suggestionTerm)
-  /// * term_length(searchTerm, suggestionTerm) - Linear. Longer search terms typically
-  /// carry more confidence, i.e. sheepdog > dog. This is reduced by edit_distance.
-  /// * inverse_document_frequency(suggestionTerm) - Sub linear.
-  ///
-  /// The relative growth/decay rates of each function determine overall result ordering:
-  ///
-  /// term_proximality &#8811; edit_distance &#8811; inverse_document_frequency
+  /// * [TermMapping.tpFromTermIdx] (searchTerm) * [TermMapping.tpFromTermIdx] (suggestionTerm) * [termProximalityWeighting]
+  /// * (Ratio of current matching [searchTerms] term sequence length to [Entry] term sequence length) * [sharedSequenceLengthWeighting]
+  /// * (Inverse document frequency over all entries (searchTerm)) * [termIdfWeighting]
   ///
   /// The resulting [Iterable] will throw [ConcurrentModificationError] if underlying
   /// [Suggester] changes during iteration. Change between seperate iterations is permitted.
