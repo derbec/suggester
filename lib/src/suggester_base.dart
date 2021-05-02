@@ -267,19 +267,22 @@ class _SugggestionIterator implements Iterator<Suggestion> {
 
       // Calculate inverse document frequency of current term within all entries.
       final idf = 1 + log(suggester.entries.length / uniqueTermEntries.length);
+
       for (final entryDistance in uniqueTermEntries.values) {
         final termEntry = entryDistance.entryTermIdx;
 
         // Update term sequences shared between search terms and entry
         final sharedTermIdxSequence = entryTermIdxSequence.putIfAbsent(
-            termEntry.entry, () => _TermIdxSequence(0, 0));
+            termEntry.entry, () => _TermIdxSequence(-1, -1));
 
         var termEntryIdx = termEntry.termIdx;
 
         // Can we extend an existing sequence?
-        if (termEntryIdx - 1 == sharedTermIdxSequence.termIdxEnd) {
+        if (sharedTermIdxSequence.termIdxEnd != -1 &&
+            termEntryIdx - 1 == sharedTermIdxSequence.termIdxEnd) {
           sharedTermIdxSequence.termIdxEnd = termEntryIdx;
         } else {
+          // Start new sequence
           sharedTermIdxSequence.termIdxStart = termEntryIdx;
           sharedTermIdxSequence.termIdxEnd = termEntryIdx;
         }

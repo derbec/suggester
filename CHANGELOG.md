@@ -17,3 +17,7 @@
 ## 0.9.4
 
 - Inproved suggestion weighting scheme to recognise matching token sequences between entries and search sentences.
+
+## 0.9.5
+
+- Fixed bug where initial search term ignored.
