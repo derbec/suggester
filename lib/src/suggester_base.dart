@@ -783,6 +783,13 @@ class Suggester {
     return terms;
   }
 
+  /// Set subScore to [subScore] for all entries
+  void setAllEntrySubScores(int subScore){
+    for(final entry in _entries.values){
+      entry._subScore = subScore;
+    }
+  }
+
   /// Return approximate size of [Suggester] instance in memory
   int sizeOf() {
     const SIZE_OF_INT = 4;

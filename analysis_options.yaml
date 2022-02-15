@@ -1,7 +1,7 @@
 # Defines a default set of lint rules enforced for
 # projects at Google. For details and rationale,
 # see https://github.com/dart-lang/pedantic#enabled-lints.
-include: package:pedantic/analysis_options.yaml
+include: package:lints/core.yaml
 
 # This package provides linter rules corresponding to the guidelines in Effective Dart
 # include: package:effective_dart/analysis_options.yaml
@@ -10,6 +10,9 @@ analyzer:
   exclude: [build/**]
   strong-mode:
     implicit-casts: false
+
+enable-experiment:
+    - non-nullable
 
 linter:
   rules:
