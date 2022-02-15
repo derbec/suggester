@@ -24,6 +24,7 @@ crypto:packages/crypto/
 dart_style:packages/dart_style/
 file:packages/file/
 fixnum:packages/fixnum/
+frontend_server_client:packages/frontend_server_client/
 glob:packages/glob/
 graphs:packages/graphs/
 http_multi_server:packages/http_multi_server/
@@ -31,6 +32,7 @@ http_parser:packages/http_parser/
 io:packages/io/
 js:packages/js/
 json_annotation:packages/json_annotation/
+lints:packages/lints/
 logging:packages/logging/
 matcher:packages/matcher/
 meta:packages/meta/
